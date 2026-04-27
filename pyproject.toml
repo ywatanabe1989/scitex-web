@@ -26,9 +26,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-readability = ["readability-lxml"]
-summarize = []  # Activates summarize_url; needs scitex.ai (umbrella).
-dev = ["pytest", "pytest-cov", "ruff"]
+readability = [
+    "readability-lxml",
+]
+summarize = []
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+]
 docs = [
     "sphinx>=7.0",
     "sphinx-rtd-theme>=2.0",
@@ -36,7 +42,10 @@ docs = [
     "sphinx-copybutton>=0.5",
     "sphinx-autodoc-typehints>=1.25",
 ]
-all = ["scitex-web[readability,dev,docs]"]
+all = [
+    "scitex-web[readability]",
+    "scitex-web[summarize]",
+]
 
 [project.urls]
 Homepage = "https://github.com/ywatanabe1989/scitex-web"
