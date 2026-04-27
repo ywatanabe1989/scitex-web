@@ -66,3 +66,6 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "W", "F", "I"]
 ignore = ["E501"]
+
+[tool.scitex-linter]
+library_dirs = ["src", "tests", "examples", "apps", "config", "docs"]
