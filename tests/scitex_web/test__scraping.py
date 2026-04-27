@@ -6,12 +6,21 @@
 Tests for web scraping utilities.
 """
 
+import importlib
 import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+
+# Resolve the `scitex_web.download_images` *module* explicitly. The package
+# `__init__` does `from .download_images import download_images`, which
+# shadows the submodule attribute with the function of the same name — so
+# `@patch("scitex_web.download_images.requests.get")` raises
+# "is not a package" under unittest.mock's importer. Use `patch.object` on
+# the module fetched via importlib instead.
+_download_images_module = importlib.import_module("scitex_web.download_images")
 
 
 class TestGetUrls:
@@ -293,7 +302,7 @@ class TestDownloadImages:
         if temp_dir and Path(temp_dir).exists():
             shutil.rmtree(temp_dir)
 
-    @patch("scitex_web.download_images.requests.get")
+    @patch.object(_download_images_module.requests, "get")
     def test_download_images_basic(self, mock_get):
         """Test basic image downloading."""
         from scitex_web import download_images
@@ -341,7 +350,7 @@ class TestDownloadImages:
         assert len(paths) == 2
         assert all(Path(p).exists() for p in paths)
 
-    @patch("scitex_web.download_images.requests.get")
+    @patch.object(_download_images_module.requests, "get")
     def test_download_images_basic_jpg_only(self, mock_get):
         """Smoke test that download_images returns paths for one image.
 
