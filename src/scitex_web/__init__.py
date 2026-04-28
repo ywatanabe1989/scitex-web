@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """scitex-web — web scraping + PubMed search + URL summarization (standalone)."""
 
-__version__ = "0.1.0"
-
+try:
+    from importlib.metadata import version as _v, PackageNotFoundError
+    try:
+        __version__ = _v("scitex-web")
+    except PackageNotFoundError:
+        __version__ = "0.0.0+local"
+    del _v, PackageNotFoundError
+except ImportError:  # pragma: no cover — only on ancient Pythons
+    __version__ = "0.0.0+local"
 from ._scraping import get_image_urls, get_urls
 from ._search_pubmed import (
     _fetch_details,
