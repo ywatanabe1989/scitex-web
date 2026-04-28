@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scitex-web"
-version = "0.1.1"
+version = "0.1.2"
 description = "Web scraping (URLs, images), PubMed search, URL summarization helpers — standalone module from the SciTeX ecosystem"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -54,6 +54,12 @@ Documentation = "https://scitex-web.readthedocs.io"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+scitex_web = ["_skills/**/*.md"]
+
+[project.entry-points."scitex_dev.skills"]
+scitex-web = "scitex_web"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
