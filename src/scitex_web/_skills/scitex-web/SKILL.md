@@ -23,5 +23,3 @@ See README.md and the package's public `__init__.py` for the full
 function list. This skill leaf exists so agents discover the package
 exists and roughly what shape it has — refer to the source for
 signatures.
-
-<!-- EOF -->
