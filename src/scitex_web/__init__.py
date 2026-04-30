@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """scitex-web — web scraping + PubMed search + URL summarization (standalone)."""
 
+from __future__ import annotations
+
 try:
     from importlib.metadata import version as _v, PackageNotFoundError
     try:
@@ -31,6 +33,7 @@ from ._summarize_url import summarize_all as _summarize_all
 from .download_images import download_images
 
 __all__ = [
+    "__version__",
     # Public API
     "search_pubmed",
     "get_crossref_metrics",
