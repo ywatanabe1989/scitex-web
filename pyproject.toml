@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scitex-web"
-version = "0.1.3"
+version = "0.1.4"
 description = "Web scraping (URLs, images), PubMed search, URL summarization helpers — standalone module from the SciTeX ecosystem"
 readme = "README.md"
 license = "AGPL-3.0-only"

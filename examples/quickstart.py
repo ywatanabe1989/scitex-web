@@ -22,6 +22,10 @@ def main():
         except (TypeError, ValueError):
             pass
         print(f"  - {name:20s} {kind:18s} {sig}")
+        # Module-level data attributes (e.g. __version__) live in __all__
+        # too — only assert callability for things that should be functions.
+        if name.startswith("__") and name.endswith("__"):
+            continue
         assert callable(obj), f"{name} is not callable"
 
     # Sanity check: search_pubmed has a sensible signature with a 'query' arg.

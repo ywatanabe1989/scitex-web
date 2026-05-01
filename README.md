@@ -10,17 +10,42 @@
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 <!-- scitex-badges:end -->
 
+<p align="center">
+  <a href="https://scitex.ai">
+    <img src="docs/scitex-logo-blue-cropped.png" alt="SciTeX" width="400">
+  </a>
+</p>
 
-Web scraping + PubMed search + URL summarization helpers, extracted from the [SciTeX](https://github.com/ywatanabe1989/scitex-python) ecosystem as a standalone package.
+<p align="center"><b>Web scraping + PubMed search + URL summarization helpers.</b></p>
 
-## Install
+<p align="center">
+  <a href="https://scitex-web.readthedocs.io/">Full Documentation</a> · <code>pip install scitex-web</code>
+</p>
+
+---
+
+## Installation
 
 ```bash
 pip install scitex-web
 pip install "scitex-web[readability]"   # readability-lxml for cleaner extraction
 ```
 
-## API
+## Quick Start
+
+```python
+import scitex_web as web
+
+results = web.search_pubmed("CRISPR Cas9 review", retmax=5)
+images = web.get_image_urls("https://example.com/gallery", min_size=128)
+```
+
+## 1 Interfaces
+
+<details>
+<summary><strong>Python API</strong></summary>
+
+<br>
 
 ```python
 import scitex_web as web
@@ -33,15 +58,17 @@ web.download_images(url, out_dir="imgs", same_domain=True)
 # PubMed
 web.search_pubmed("CRISPR Cas9 review", retmax=50)
 
-# URL summarization (requires scitex.ai)
+# URL summarization (requires scitex.ai umbrella)
 web.summarize_url("https://example.com/article")
 ```
+
+</details>
 
 ## Status
 
 Standalone fork of `scitex.web`. Deps: requests / aiohttp / bs4 / tqdm. The
-umbrella package's `scitex.web` import path is preserved via a `sys.modules`-alias
-bridge.
+umbrella package's `scitex.web` import path is preserved via a
+`sys.modules`-alias bridge.
 
 Decoupling notes:
 - `scitex.logging.getLogger` → stdlib `logging.getLogger`.
@@ -49,9 +76,25 @@ Decoupling notes:
 - `scitex.ai.GenAI` (used by `summarize_url`) → deferred import that raises
   a clear ImportError if the umbrella `scitex` package isn't installed.
 
-14/23 tests pass (7 pre-existing upstream failures around bs4 mocking that fail
-in scitex-python too — unrelated to extraction; 2 skipped).
+## Part of SciTeX
+
+`scitex-web` is part of [**SciTeX**](https://scitex.ai).
+
+>Four Freedoms for Research
+>
+>0. The freedom to **run** your research anywhere — your machine, your terms.
+>1. The freedom to **study** how every step works — from raw data to final manuscript.
+>2. The freedom to **redistribute** your workflows, not just your papers.
+>3. The freedom to **modify** any module and share improvements with the community.
+>
+>AGPL-3.0 — because we believe research infrastructure deserves the same freedoms as the software it runs on.
 
 ## License
 
 AGPL-3.0-only (see [LICENSE](./LICENSE)).
+
+---
+
+<p align="center">
+  <a href="https://scitex.ai" target="_blank"><img src="docs/scitex-icon-navy-inverted.png" alt="SciTeX" width="40"/></a>
+</p>
