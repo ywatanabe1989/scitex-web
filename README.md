@@ -78,7 +78,9 @@ Decoupling notes:
 
 ## Part of SciTeX
 
-`scitex-web` is part of [**SciTeX**](https://scitex.ai).
+`scitex-web` is part of [**SciTeX**](https://scitex.ai). Install via
+the umbrella with `pip install scitex[web]` to use as
+`scitex.web` (Python) or `scitex web ...` (CLI).
 
 >Four Freedoms for Research
 >
