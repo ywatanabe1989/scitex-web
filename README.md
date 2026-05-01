@@ -42,7 +42,7 @@ images = web.get_image_urls("https://example.com/gallery", min_size=128)
 
 ## 1 Interfaces
 
-<details>
+<details open>
 <summary><strong>Python API</strong></summary>
 
 <br>
