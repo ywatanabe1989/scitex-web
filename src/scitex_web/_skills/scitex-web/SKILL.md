@@ -24,3 +24,9 @@ See README.md and the package's public `__init__.py` for the full
 function list. This skill leaf exists so agents discover the package
 exists and roughly what shape it has — refer to the source for
 signatures.
+
+## Sub-skills
+
+- [01_installation.md](01_installation.md) — pip install + smoke verify
+- [02_quick-start.md](02_quick-start.md) — PubMed + scrape + summarize examples
+- [03_python-api.md](03_python-api.md) — public callables reference
