@@ -30,3 +30,4 @@ signatures.
 - [01_installation.md](01_installation.md) — pip install + smoke verify
 - [02_quick-start.md](02_quick-start.md) — PubMed + scrape + summarize examples
 - [03_python-api.md](03_python-api.md) — public callables reference
+- [20_env-vars.md](20_env-vars.md) — `SCITEX_WEB_*` runtime env vars
