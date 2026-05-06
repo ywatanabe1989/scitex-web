@@ -16,7 +16,7 @@ import pytest
 # ===== AUTO-GENERATED: cross-package imports =====
 CROSS_PACKAGE_IMPORTS = [
     'scitex',
-    'scitex.ai',
+    'scitex_ai',
 ]
 # ===== END AUTO-GENERATED =====
 
