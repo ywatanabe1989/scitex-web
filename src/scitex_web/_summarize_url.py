@@ -132,7 +132,7 @@ def crawl_to_json(start_url):
 def _get_genai(model: str):
     """Lazy-load scitex.ai.GenAI; raise a clear ImportError if scitex isn't installed."""
     try:
-        from scitex.ai import GenAI  # type: ignore
+        from scitex_ai import GenAI  # type: ignore
     except ImportError as e:
         raise ImportError(
             "summarize_url / summarize_all require the 'scitex' umbrella package "
