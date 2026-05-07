@@ -26,6 +26,38 @@
 
 ---
 
+## Problem and Solution
+
+| # | Problem | Solution |
+|---|---------|----------|
+| 1 | **Bulk-fetching links / images means handwriting `requests`+`bs4` boilerplate** every project | **`get_urls`, `get_image_urls`, `download_images`** — pattern + min-size + same-domain filters in one call |
+| 2 | **PubMed E-utilities require XML parsing, retries, and pagination** — easy to get wrong | **`search_pubmed(query, retmax=N)`** — returns parsed records; handles pagination + rate limits |
+| 3 | **Skimming an article means opening a tab, grabbing the body, summarizing manually** | **`summarize_url(url)`** — readability extraction + LLM summary (via the SciTeX umbrella) |
+
+## Architecture
+
+```
+scitex_web/
+├── _scrape.py          # get_urls / get_image_urls / download_images
+├── _pubmed.py          # search_pubmed (E-utilities client)
+├── _summarize.py       # summarize_url (deferred GenAI import)
+└── _utils.py           # shared logging + ANSI helpers
+```
+
+```mermaid
+flowchart LR
+    URL[URL] -->|get_urls / get_image_urls| L[Filtered links]
+    L -->|download_images| F[Local files]
+    Q[Query string] -->|search_pubmed| R[Parsed PubMed records]
+    A[Article URL] -->|summarize_url| S[Summary text]
+    S -.uses.-> AI[(scitex.ai.GenAI<br/>deferred import)]
+    style F fill:#27ae60,stroke:#2c3e50,color:#fff
+    style R fill:#27ae60,stroke:#2c3e50,color:#fff
+    style S fill:#27ae60,stroke:#2c3e50,color:#fff
+```
+
+<p align="center"><sub><b>Figure 1.</b> Module layout. Three independent capabilities — scraping, PubMed search, URL summarization. Only summarization needs the umbrella <code>scitex</code> for the GenAI client.</sub></p>
+
 ## Installation
 
 ```bash
@@ -65,6 +97,51 @@ web.summarize_url("https://example.com/article")
 ```
 
 </details>
+
+## Demo
+
+```python
+import scitex_web as web
+
+# 1) Scrape PDFs from a faculty page
+pdfs = web.get_urls("https://lab.example.edu/publications", pattern=r"\.pdf$")
+#   → ['https://lab.example.edu/papers/2024_smith.pdf', ...]
+
+# 2) Bulk-download figures (same domain, ≥256px)
+web.download_images(
+    "https://example.com/gallery",
+    out_dir="imgs",
+    same_domain=True,
+    min_size=256,
+)
+
+# 3) Search PubMed
+records = web.search_pubmed("CRISPR Cas9 review", retmax=5)
+for r in records:
+    print(r["pmid"], r["title"])
+
+# 4) Summarize an article (requires umbrella scitex)
+print(web.summarize_url("https://example.com/article"))
+```
+
+```mermaid
+flowchart TD
+    Start[Start] --> Want{Goal?}
+    Want -- "harvest URLs" --> A[get_urls / get_image_urls]
+    Want -- "save images" --> B[download_images]
+    Want -- "search literature" --> C[search_pubmed]
+    Want -- "summarize article" --> D[summarize_url]
+    A --> Out[List / DataFrame]
+    B --> Out2[Files on disk]
+    C --> Out3[Parsed records]
+    D --> Out4[Text summary]
+    style Out  fill:#27ae60,stroke:#2c3e50,color:#fff
+    style Out2 fill:#27ae60,stroke:#2c3e50,color:#fff
+    style Out3 fill:#27ae60,stroke:#2c3e50,color:#fff
+    style Out4 fill:#27ae60,stroke:#2c3e50,color:#fff
+```
+
+<p align="center"><sub><b>Figure 2.</b> Demo. Pick a helper by output shape: links, files, records, or summary text.</sub></p>
 
 ## Status
 
