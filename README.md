@@ -9,7 +9,7 @@
 <p align="center"><b>Web scraping + PubMed search + URL summarization helpers.</b></p>
 
 <p align="center">
-  <a href="https://scitex-web.readthedocs.io/">Full Documentation</a> · <code>pip install scitex-web</code>
+  <a href="https://scitex-web.readthedocs.io/">Full Documentation</a> · <code>uv pip install scitex-web[all]</code>
 </p>
 
 <!-- scitex-badges:start -->
