@@ -1,6 +1,0 @@
-scitex\_web.download\_images
-============================
-
-.. currentmodule:: scitex_web
-
-.. autofunction:: download_images
