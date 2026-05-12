@@ -18,3 +18,10 @@ docs/sphinx/_build/
 docs/sphinx/api/
 *.swp
 .DS_Store
+
+# Local agent / dev state directories, except the tracked config.
+.scitex/*
+!.scitex/dev/
+.scitex/dev/*
+!.scitex/dev/config.yaml
+.claude/

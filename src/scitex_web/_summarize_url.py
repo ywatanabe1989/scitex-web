@@ -13,13 +13,21 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-try:
-    from readability import Document
-except ImportError:
-    try:
-        from readability.readability import Document
-    except ImportError:
-        Document = None
+from scitex_dev import try_import_optional
+
+Document = try_import_optional(
+    "readability", "Document", extra="readability", pkg="scitex-web"
+)
+if Document is None:
+    # Older readability-lxml layouts (pre-0.8) shipped ``Document`` under
+    # ``readability.readability`` instead of the package root. Fall back
+    # transparently so callers don't have to care.
+    Document = try_import_optional(
+        "readability.readability",
+        "Document",
+        extra="readability",
+        pkg="scitex-web",
+    )
 
 import re
 

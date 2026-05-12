@@ -1,0 +1,21 @@
+# scitex-dev project-type config
+# Drives which rule families the auditor applies.
+# See: scitex-dev ecosystem audit-project --help
+
+project-type:
+  - pip
+
+# Older scitex-dev releases (<0.11.15) do not yet whitelist `codecov.yml`
+# at the project root in their `SPEC_DEFAULT_FILES` baseline, so they
+# fire PS-103 against it. The canonical location for codecov config IS
+# the repo root (see `_skills/general/02_package_11_ci-and-codecov.md`),
+# so we whitelist it explicitly until every installed copy of scitex-dev
+# is on a release that already includes the file in the baseline.
+audit:
+  root-whitelist:
+    files:
+      - codecov.yml
+
+# audit:
+#   skip:
+#     - PS-108

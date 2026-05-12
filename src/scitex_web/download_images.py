@@ -29,14 +29,12 @@ from tqdm import tqdm
 # ``scitex --help-recursive`` on installs without beautifulsoup4.
 # See ywatanabe1989/todo#279.
 
-try:
-    from io import BytesIO
+from io import BytesIO
 
-    from PIL import Image
+from scitex_dev import try_import_optional
 
-    PILLOW_AVAILABLE = True
-except ImportError:
-    PILLOW_AVAILABLE = False
+Image = try_import_optional("PIL.Image")
+PILLOW_AVAILABLE = Image is not None
 
 from logging import getLogger
 

@@ -1,0 +1,23 @@
+# Codecov configuration — see https://docs.codecov.com/docs/codecovyml-reference
+# The target is "auto" while the package is still ramping its coverage; once
+# the test suite reaches 90% steadily, swap to:
+#
+#   coverage:
+#     status:
+#       project:
+#         default:
+#           target: 90%
+#
+# The subprocess-coverage wiring in tests/conftest.py + the parallel
+# coverage config in pyproject.toml feed this number; see skill leaf
+# 05_development_06_subprocess-coverage.md.
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: 80%

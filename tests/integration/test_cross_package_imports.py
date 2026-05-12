@@ -21,6 +21,7 @@ import pytest
 CROSS_PACKAGE_IMPORTS = [
     'scitex',
     'scitex_ai',
+    'scitex_dev',
 ]
 # ===== END AUTO-GENERATED =====
 
