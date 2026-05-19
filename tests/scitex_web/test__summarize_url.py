@@ -36,6 +36,9 @@ class TestExtractMainContent:
 
     def test_extract_main_content_with_readability(self):
         """Test content extraction with readability library."""
+        # Arrange
+        # Act
+        # Assert
         html_content = """
         <html>
             <body>
@@ -60,6 +63,9 @@ class TestExtractMainContent:
 
     def test_extract_main_content_without_readability(self):
         """Test content extraction when readability is not available."""
+        # Arrange
+        # Act
+        # Assert
         html_content = "<p>Test content</p>"
 
         with patch("scitex_web._summarize_url.Document", None):
@@ -68,6 +74,9 @@ class TestExtractMainContent:
 
     def test_extract_main_content_complex_html(self):
         """Test extraction with complex HTML."""
+        # Arrange
+        # Act
+        # Assert
         html_content = """
         <html>
             <head><title>Test</title></head>
@@ -88,12 +97,18 @@ class TestExtractMainContent:
 
     def test_extract_main_content_empty_html(self):
         """Test extraction with empty HTML."""
+        # Arrange
+        # Act
+        # Assert
         with patch("scitex_web._summarize_url.Document", None):
             result = extract_main_content("")
             assert result == ""
 
     def test_extract_main_content_no_tags(self):
         """Test extraction with plain text."""
+        # Arrange
+        # Act
+        # Assert
         plain_text = "Just plain text without HTML"
 
         with patch("scitex_web._summarize_url.Document", None):
@@ -106,6 +121,9 @@ class TestCrawlUrl:
 
     def test_crawl_url_single_page(self):
         """Test crawling a single page."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = "<html><body><p>Test content</p></body></html>"
@@ -123,6 +141,9 @@ class TestCrawlUrl:
 
     def test_crawl_url_with_links(self):
         """Test crawling with links to follow."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = """
@@ -144,6 +165,9 @@ class TestCrawlUrl:
 
     def test_crawl_url_max_depth(self):
         """Test that max_depth is respected."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = '<a href="/deep">Link</a>'
@@ -160,6 +184,9 @@ class TestCrawlUrl:
 
     def test_crawl_url_request_exception(self):
         """Test handling of request exceptions."""
+        # Arrange
+        # Act
+        # Assert
         import requests
 
         with patch(
@@ -172,6 +199,9 @@ class TestCrawlUrl:
 
     def test_crawl_url_non_200_status(self):
         """Test handling of non-200 status codes."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.status_code = 404
 
@@ -183,6 +213,9 @@ class TestCrawlUrl:
 
     def test_crawl_url_avoid_duplicate_visits(self):
         """Test that URLs are not visited twice."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.status_code = 200
         # Use exact same URL to test duplicate avoidance
@@ -210,6 +243,9 @@ class TestCrawlToJson:
 
     def test_crawl_to_json_basic(self):
         """Test basic JSON conversion."""
+        # Arrange
+        # Act
+        # Assert
         mock_urls = {"http://test.com"}
         mock_contents = {"http://test.com": "Test page content"}
 
@@ -248,6 +284,9 @@ class TestCrawlToJson:
 
     def test_crawl_to_json_url_normalization(self):
         """Test URL normalization (adding https://)."""
+        # Arrange
+        # Act
+        # Assert
         with patch("scitex_web._summarize_url.crawl_url", return_value=(set(), {})):
             with patch("concurrent.futures.ThreadPoolExecutor"):
                 with patch("concurrent.futures.as_completed", return_value=[]):
@@ -258,6 +297,9 @@ class TestCrawlToJson:
 
     def test_crawl_to_json_already_has_protocol(self):
         """Test URL with existing protocol."""
+        # Arrange
+        # Act
+        # Assert
         with patch("scitex_web._summarize_url.crawl_url", return_value=(set(), {})):
             with patch("concurrent.futures.ThreadPoolExecutor"):
                 with patch("concurrent.futures.as_completed", return_value=[]):
@@ -268,6 +310,9 @@ class TestCrawlToJson:
 
     def test_crawl_to_json_multiple_pages(self):
         """Test JSON conversion with multiple pages."""
+        # Arrange
+        # Act
+        # Assert
         mock_urls = {"http://test.com", "http://test.com/page2"}
         mock_contents = {
             "http://test.com": "Main content",
@@ -310,6 +355,9 @@ class TestSummarizeAll:
 
     def test_summarize_all_basic(self):
         """Test basic summarization."""
+        # Arrange
+        # Act
+        # Assert
         json_content = json.dumps(
             {
                 "start_url": "http://test.com",
@@ -339,6 +387,9 @@ class TestSummarizeAll:
 
     def test_summarize_all_empty_json(self):
         """Test summarization with empty JSON."""
+        # Arrange
+        # Act
+        # Assert
         empty_json = json.dumps({"start_url": "", "crawled_pages": []})
 
         with patch("scitex.ai.GenAI") as mock_genai:
@@ -355,6 +406,9 @@ class TestSummarizeUrl:
 
     def test_summarize_url_complete_flow(self):
         """Test complete URL summarization flow."""
+        # Arrange
+        # Act
+        # Assert
         mock_json = json.dumps(
             {
                 "start_url": "https://test.com",
@@ -377,6 +431,9 @@ class TestSummarizeUrl:
 
     def test_summarize_url_error_handling(self):
         """Test error handling in summarize_url."""
+        # Arrange
+        # Act
+        # Assert
         with patch(
             "scitex_web._summarize_url.crawl_to_json",
             side_effect=Exception("Crawl error"),
@@ -387,6 +444,9 @@ class TestSummarizeUrl:
 
     def test_summarize_url_pprint_called(self):
         """Test that pprint is called with the summary."""
+        # Arrange
+        # Act
+        # Assert
         mock_json = '{"test": "data"}'
         mock_summary = "Test summary"
 
@@ -405,10 +465,16 @@ class TestMain:
 
     def test_main_is_summarize_url(self):
         """Test that main is an alias for summarize_url."""
+        # Arrange
+        # Act
+        # Assert
         assert main == summarize_url
 
-    def test_main_execution(self):
+    def test_main_execution_smoke_case(self):
         """Test main function execution returns expected result structure."""
+        # Arrange
+        # Act
+        # Assert
         mock_json = '{"test": "data"}'
         mock_summary = "Test summary"
 
@@ -422,8 +488,11 @@ class TestMain:
                     assert result[0] == mock_summary
                     assert result[1] == mock_json
 
-    def test_script_execution(self):
+    def test_script_execution_smoke_case(self):
         """Test script execution with arguments."""
+        # Arrange
+        # Act
+        # Assert
         import argparse
 
         with patch("sys.argv", ["script.py", "--url", "http://example.com"]):
@@ -438,6 +507,9 @@ class TestMain:
         """Test readability import fallback mechanism."""
         # This tests the import logic in the actual module
         # The module tries to import from 'readability' first, then 'readability.readability'
+        # Arrange
+        # Act
+        # Assert
         import sys
 
         # Test when both imports fail

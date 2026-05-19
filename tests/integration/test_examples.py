@@ -7,7 +7,16 @@ from pathlib import Path
 EXAMPLES = list(Path(__file__).parent.parent.joinpath("examples").glob("*.py"))
 
 
-def test_examples_smoke(tmp_path):
+def test_examples_smoke_examples(tmp_path):
+    # Arrange
+    # Act
+    # Assert
+    # Arrange
+    # Act
+    # Assert
+    # Arrange
+    # Act
+    # Assert
     assert EXAMPLES, "No example scripts found under examples/"
     for ex in EXAMPLES:
         r = subprocess.run(

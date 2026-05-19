@@ -41,6 +41,9 @@ class TestSearchPubmed:
 
     def test_search_pubmed_success(self):
         """Test successful PubMed search."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = True
         mock_response.json.return_value = {
@@ -54,6 +57,9 @@ class TestSearchPubmed:
 
     def test_search_pubmed_failure(self):
         """Test failed PubMed search."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = False
 
@@ -65,6 +71,9 @@ class TestSearchPubmed:
 
     def test_search_pubmed_network_error(self):
         """Test network error during search."""
+        # Arrange
+        # Act
+        # Assert
         import requests
 
         with patch(
@@ -78,6 +87,9 @@ class TestSearchPubmed:
 
     def test_search_pubmed_parameters(self):
         """Test search parameters are correctly passed."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = True
         mock_response.json.return_value = {"esearchresult": {}}
@@ -97,6 +109,9 @@ class TestFetchDetails:
 
     def test_fetch_details_success(self):
         """Test successful fetch of article details."""
+        # Arrange
+        # Act
+        # Assert
         mock_abstract_response = Mock()
         mock_abstract_response.ok = True
         mock_abstract_response.text = "<xml>abstract data</xml>"
@@ -116,6 +131,9 @@ class TestFetchDetails:
 
     def test_fetch_details_failure(self):
         """Test failed fetch of article details."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = False
 
@@ -125,6 +143,9 @@ class TestFetchDetails:
 
     def test_fetch_details_parameters(self):
         """Test fetch details parameters."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = True
         mock_response.text = ""
@@ -147,8 +168,10 @@ class TestFetchDetails:
 class TestParseAbstractXml:
     """Test _parse_abstract_xml function."""
 
-    def test_parse_abstract_xml_complete(self):
-        """Test parsing complete XML with all fields."""
+    def test_parse_abstract_xml_complete_n_12345_in_result(self):
+        # Arrange
+        # Arrange
+        # Arrange
         xml_text = """
         <PubmedArticleSet>
             <PubmedArticle>
@@ -176,15 +199,140 @@ class TestParseAbstractXml:
             </PubmedArticle>
         </PubmedArticleSet>
         """
-
+        # Act
+        # Act
         result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert "12345" in result
+
+    def test_parse_abstract_xml_complete_result_12345_0_this_is_the_abstract_text(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>12345</PMID>
+                    <Article>
+                        <Abstract>
+                            <AbstractText>This is the abstract text.</AbstractText>
+                        </Abstract>
+                    </Article>
+                </MedlineCitation>
+                <PubmedData>
+                    <ArticleIdList>
+                        <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
+                    </ArticleIdList>
+                </PubmedData>
+                <MeshHeadingList>
+                    <MeshHeading>
+                        <DescriptorName>Keyword1</DescriptorName>
+                    </MeshHeading>
+                    <MeshHeading>
+                        <DescriptorName>Keyword2</DescriptorName>
+                    </MeshHeading>
+                </MeshHeadingList>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert result["12345"][0] == "This is the abstract text."
+
+    def test_parse_abstract_xml_complete_result_12345_1_keyword1_keyword2(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>12345</PMID>
+                    <Article>
+                        <Abstract>
+                            <AbstractText>This is the abstract text.</AbstractText>
+                        </Abstract>
+                    </Article>
+                </MedlineCitation>
+                <PubmedData>
+                    <ArticleIdList>
+                        <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
+                    </ArticleIdList>
+                </PubmedData>
+                <MeshHeadingList>
+                    <MeshHeading>
+                        <DescriptorName>Keyword1</DescriptorName>
+                    </MeshHeading>
+                    <MeshHeading>
+                        <DescriptorName>Keyword2</DescriptorName>
+                    </MeshHeading>
+                </MeshHeadingList>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert result["12345"][1] == ["Keyword1", "Keyword2"]
+
+    def test_parse_abstract_xml_complete_result_12345_2_10_1234_test_doi(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>12345</PMID>
+                    <Article>
+                        <Abstract>
+                            <AbstractText>This is the abstract text.</AbstractText>
+                        </Abstract>
+                    </Article>
+                </MedlineCitation>
+                <PubmedData>
+                    <ArticleIdList>
+                        <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
+                    </ArticleIdList>
+                </PubmedData>
+                <MeshHeadingList>
+                    <MeshHeading>
+                        <DescriptorName>Keyword1</DescriptorName>
+                    </MeshHeading>
+                    <MeshHeading>
+                        <DescriptorName>Keyword2</DescriptorName>
+                    </MeshHeading>
+                </MeshHeadingList>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert result["12345"][2] == "10.1234/test.doi"
 
-    def test_parse_abstract_xml_missing_fields(self):
-        """Test parsing XML with missing fields."""
+
+    def test_parse_abstract_xml_missing_fields_n_67890_in_result(self):
+        # Arrange
+        # Arrange
+        # Arrange
         xml_text = """
         <PubmedArticleSet>
             <PubmedArticle>
@@ -194,15 +342,86 @@ class TestParseAbstractXml:
             </PubmedArticle>
         </PubmedArticleSet>
         """
-
+        # Act
+        # Act
         result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert "67890" in result
+
+    def test_parse_abstract_xml_missing_fields_result_67890_0(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>67890</PMID>
+                </MedlineCitation>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert result["67890"][0] == ""  # No abstract
+
+    def test_parse_abstract_xml_missing_fields_result_67890_1(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>67890</PMID>
+                </MedlineCitation>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert result["67890"][1] == []  # No keywords
+
+    def test_parse_abstract_xml_missing_fields_result_67890_2(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>67890</PMID>
+                </MedlineCitation>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert result["67890"][2] == ""  # No DOI
 
-    def test_parse_abstract_xml_multiple_articles(self):
-        """Test parsing XML with multiple articles."""
+
+    def test_parse_abstract_xml_multiple_articles_len_result_is_2(self):
+        # Arrange
+        # Arrange
+        # Arrange
         xml_text = """
         <PubmedArticleSet>
             <PubmedArticle>
@@ -217,11 +436,69 @@ class TestParseAbstractXml:
             </PubmedArticle>
         </PubmedArticleSet>
         """
-
+        # Act
+        # Act
         result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(result) == 2
+
+    def test_parse_abstract_xml_multiple_articles_n_11111_in_result(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>11111</PMID>
+                </MedlineCitation>
+            </PubmedArticle>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>22222</PMID>
+                </MedlineCitation>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert "11111" in result
+
+    def test_parse_abstract_xml_multiple_articles_n_22222_in_result(self):
+        # Arrange
+        # Arrange
+        # Arrange
+        xml_text = """
+        <PubmedArticleSet>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>11111</PMID>
+                </MedlineCitation>
+            </PubmedArticle>
+            <PubmedArticle>
+                <MedlineCitation>
+                    <PMID>22222</PMID>
+                </MedlineCitation>
+            </PubmedArticle>
+        </PubmedArticleSet>
+        """
+        # Act
+        # Act
+        result = _parse_abstract_xml(xml_text)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert "22222" in result
+
 
 
 class TestGetCitation:
@@ -229,6 +506,9 @@ class TestGetCitation:
 
     def test_get_citation_success(self):
         """Test successful citation retrieval."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = True
         mock_response.text = "@article{test_citation}"
@@ -239,6 +519,9 @@ class TestGetCitation:
 
     def test_get_citation_failure(self):
         """Test failed citation retrieval."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = False
 
@@ -248,6 +531,9 @@ class TestGetCitation:
 
     def test_get_citation_parameters(self):
         """Test citation parameters."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = True
         mock_response.text = ""
@@ -266,6 +552,9 @@ class TestGetCrossrefMetrics:
 
     def test_get_crossref_metrics_success(self):
         """Test successful CrossRef metrics retrieval."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = True
         mock_response.json.return_value = {
@@ -288,6 +577,9 @@ class TestGetCrossrefMetrics:
 
     def test_get_crossref_metrics_failure(self):
         """Test failed CrossRef metrics retrieval."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = False
 
@@ -297,6 +589,9 @@ class TestGetCrossrefMetrics:
 
     def test_get_crossref_metrics_missing_fields(self):
         """Test CrossRef metrics with missing fields."""
+        # Arrange
+        # Act
+        # Assert
         mock_response = Mock()
         mock_response.ok = True
         mock_response.json.return_value = {"message": {}}
@@ -315,6 +610,9 @@ class TestSaveBibtex:
 
     def test_save_bibtex_with_citations(self):
         """Test saving BibTeX with official citations."""
+        # Arrange
+        # Act
+        # Assert
         papers = {
             "12345": {
                 "title": "Test Paper",
@@ -341,6 +639,9 @@ class TestSaveBibtex:
 
     def test_save_bibtex_without_citations(self):
         """Test saving BibTeX without official citations."""
+        # Arrange
+        # Act
+        # Assert
         papers = {
             "67890": {
                 "title": "Test Paper Without Citation",
@@ -367,6 +668,9 @@ class TestSaveBibtex:
 
     def test_save_bibtex_skip_uids(self):
         """Test that 'uids' key is skipped."""
+        # Arrange
+        # Act
+        # Assert
         papers = {"uids": ["12345"], "12345": {"title": "Real Paper"}}
         abstracts = {}
 
@@ -385,6 +689,9 @@ class TestFormatBibtex:
 
     def test_format_bibtex_complete(self):
         """Test formatting complete BibTeX entry."""
+        # Arrange
+        # Act
+        # Assert
         paper = {
             "title": "Machine Learning for Medical Diagnosis",
             "authors": [{"name": "John A. Smith"}, {"name": "Jane B. Doe"}],
@@ -417,6 +724,9 @@ class TestFormatBibtex:
 
     def test_format_bibtex_minimal(self):
         """Test formatting BibTeX with minimal data."""
+        # Arrange
+        # Act
+        # Assert
         paper = {
             "title": "A",
             "authors": [{"name": "X"}],
@@ -435,6 +745,9 @@ class TestFormatBibtex:
 
     def test_format_bibtex_special_characters(self):
         """Test formatting with special characters in names."""
+        # Arrange
+        # Act
+        # Assert
         paper = {
             "title": "Test-Paper: With Special Characters!",
             "authors": [{"name": "O'Neill-Smith"}],
@@ -457,6 +770,7 @@ class TestAsyncFunctions:
     @pytest.mark.asyncio
     async def test_fetch_async_json(self):
         """Test async fetch with JSON response."""
+        # Arrange
         from unittest.mock import AsyncMock
 
         mock_response = MagicMock()
@@ -466,12 +780,15 @@ class TestAsyncFunctions:
         mock_session = MagicMock()
         mock_session.get.return_value.__aenter__.return_value = mock_response
 
+        # Act
         result = await fetch_async(mock_session, "http://test.com", {"retmode": "json"})
+        # Assert
         assert result == {"test": "data"}
 
     @pytest.mark.asyncio
     async def test_fetch_async_xml(self):
         """Test async fetch with XML response."""
+        # Arrange
         from unittest.mock import AsyncMock
 
         mock_response = MagicMock()
@@ -481,24 +798,32 @@ class TestAsyncFunctions:
         mock_session = MagicMock()
         mock_session.get.return_value.__aenter__.return_value = mock_response
 
+        # Act
         result = await fetch_async(mock_session, "http://test.com", {"retmode": "xml"})
+        # Assert
         assert result == "<xml>test</xml>"
 
     @pytest.mark.asyncio
     async def test_fetch_async_failure(self):
         """Test async fetch with failed response."""
+        # Arrange
         mock_response = MagicMock()
         mock_response.status = 404
 
         mock_session = MagicMock()
         mock_session.get.return_value.__aenter__.return_value = mock_response
 
+        # Act
         result = await fetch_async(mock_session, "http://test.com", {})
+        # Assert
         assert result == {}
 
     @pytest.mark.asyncio
     async def test_batch_fetch_details(self):
         """Test batch fetching details."""
+        # Arrange
+        # Act
+        # Assert
         pmids = ["11111", "22222", "33333"]
 
         with patch("aiohttp.ClientSession") as mock_session_class:
@@ -526,12 +851,18 @@ class TestSearchPubmedMain:
 
     def test_search_pubmed_no_results(self):
         """Test search with no results."""
+        # Arrange
+        # Act
+        # Assert
         with patch("scitex_web._search_pubmed._search_pubmed", return_value={}):
             result = search_pubmed("test query", n_entries=10)
             assert result == 1
 
     def test_search_pubmed_success(self):
         """Test successful search and save."""
+        # Arrange
+        # Act
+        # Assert
         search_results = {"esearchresult": {"idlist": ["12345", "67890"], "count": "2"}}
 
         batch_results = [
@@ -564,6 +895,9 @@ class TestSearchPubmedMain:
 
     def test_search_pubmed_query_sanitization(self):
         """Test that query is properly sanitized for filename."""
+        # Arrange
+        # Act
+        # Assert
         search_results = {"esearchresult": {"idlist": [], "count": "0"}}
 
         with patch(
@@ -583,6 +917,9 @@ class TestParseArgs:
 
     def test_parse_args_with_query(self):
         """Test parsing arguments with query."""
+        # Arrange
+        # Act
+        # Assert
         with patch(
             "sys.argv",
             ["script.py", "--query", "epilepsy prediction", "--n_entries", "20"],
@@ -594,6 +931,9 @@ class TestParseArgs:
 
     def test_parse_args_defaults(self):
         """Test parsing arguments with defaults."""
+        # Arrange
+        # Act
+        # Assert
         with patch("sys.argv", ["script.py"]):
             with patch("scitex.str.printc"):
                 args = parse_args()
@@ -602,6 +942,9 @@ class TestParseArgs:
 
     def test_parse_args_short_options(self):
         """Test parsing with short options."""
+        # Arrange
+        # Act
+        # Assert
         with patch("sys.argv", ["script.py", "-q", "test", "-n", "5"]):
             with patch("scitex.str.printc"):
                 args = parse_args()
@@ -614,6 +957,9 @@ class TestRunMain:
 
     def test_run_main_success(self):
         """Test successful main execution."""
+        # Arrange
+        # Act
+        # Assert
         mock_args = Mock()
         mock_args.query = "test query"
         mock_args.n_entries = 10
@@ -634,6 +980,9 @@ class TestRunMain:
 
     def test_run_main_with_error(self):
         """Test main execution with error."""
+        # Arrange
+        # Act
+        # Assert
         mock_args = Mock()
         mock_args.query = "test"
         mock_args.n_entries = 5
