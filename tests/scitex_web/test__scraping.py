@@ -27,10 +27,11 @@ class TestGetUrls:
     """Test get_urls function."""
 
     @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_basic(self, mock_get):
-        """Test basic URL extraction."""
+    def test_get_urls_basic_len_urls_is_3(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import get_urls
-
         mock_response = Mock()
         mock_response.text = """
         <html>
@@ -43,19 +44,103 @@ class TestGetUrls:
         """
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-
+        # Act
+        # Act
         urls = get_urls("https://example.com")
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(urls) == 3
-        assert "https://example.com/page1" in urls
-        assert "https://example.com/page2" in urls
-        assert "https://example.com/page3" in urls
 
     @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_with_pattern(self, mock_get):
-        """Test URL extraction with pattern filtering."""
+    def test_get_urls_basic_https_example_com_page1_in_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import get_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="https://example.com/page1">Link 1</a>
+                <a href="/page2">Link 2</a>
+                <a href="https://example.com/page3">Link 3</a>
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        urls = get_urls("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert "https://example.com/page1" in urls
 
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_urls_basic_https_example_com_page2_in_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="https://example.com/page1">Link 1</a>
+                <a href="/page2">Link 2</a>
+                <a href="https://example.com/page3">Link 3</a>
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        urls = get_urls("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert "https://example.com/page2" in urls
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_urls_basic_https_example_com_page3_in_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="https://example.com/page1">Link 1</a>
+                <a href="/page2">Link 2</a>
+                <a href="https://example.com/page3">Link 3</a>
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        urls = get_urls("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert "https://example.com/page3" in urls
+
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_urls_with_pattern_len_urls_is_2(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_urls
         mock_response = Mock()
         mock_response.text = """
         <html>
@@ -68,17 +153,49 @@ class TestGetUrls:
         """
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-
+        # Act
+        # Act
         urls = get_urls("https://example.com", pattern=r"\.pdf$")
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(urls) == 2
-        assert all(url.endswith(".pdf") for url in urls)
 
     @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_same_domain(self, mock_get):
-        """Test URL extraction with same domain filter."""
+    def test_get_urls_with_pattern_all_url_endswith_pdf_for_url_in_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import get_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="https://example.com/doc.pdf">PDF</a>
+                <a href="https://example.com/page.html">HTML</a>
+                <a href="https://example.com/data.pdf">Another PDF</a>
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        urls = get_urls("https://example.com", pattern=r"\.pdf$")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert all(url.endswith(".pdf") for url in urls)
 
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_urls_same_domain_len_urls_is_2(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_urls
         mock_response = Mock()
         mock_response.text = """
         <html>
@@ -91,18 +208,76 @@ class TestGetUrls:
         """
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-
+        # Act
+        # Act
         urls = get_urls("https://example.com", same_domain=True)
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(urls) == 2
-        assert all("example.com" in url for url in urls)
-        assert not any("other.com" in url for url in urls)
 
     @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_relative_urls(self, mock_get):
-        """Test conversion of relative URLs to absolute."""
+    def test_get_urls_same_domain_all_example_com_in_url_for_url_in_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import get_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="https://example.com/page1">Internal</a>
+                <a href="https://other.com/page2">External</a>
+                <a href="/page3">Relative</a>
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        urls = get_urls("https://example.com", same_domain=True)
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert all("example.com" in url for url in urls)
 
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_urls_same_domain_not_any_other_com_in_url_for_url_in_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="https://example.com/page1">Internal</a>
+                <a href="https://other.com/page2">External</a>
+                <a href="/page3">Relative</a>
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        urls = get_urls("https://example.com", same_domain=True)
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert not any("other.com" in url for url in urls)
+
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_urls_relative_urls_len_urls_is_3(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_urls
         mock_response = Mock()
         mock_response.text = """
         <html>
@@ -115,28 +290,63 @@ class TestGetUrls:
         """
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-
+        # Act
+        # Act
         urls = get_urls("https://example.com/dir/", absolute=True)
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(urls) == 3
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_urls_relative_urls_all_url_startswith_https_for_url_in_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <a href="/page1">Page 1</a>
+                <a href="page2">Page 2</a>
+                <a href="../page3">Page 3</a>
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        urls = get_urls("https://example.com/dir/", absolute=True)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert all(url.startswith("https://") for url in urls)
+
 
     @patch("scitex_web._scraping.requests.get")
     def test_get_urls_request_failure(self, mock_get):
         """Test handling of request failures."""
+        # Arrange
         import requests
 
         from scitex_web import get_urls
 
         mock_get.side_effect = requests.RequestException("Network error")
 
+        # Act
         urls = get_urls("https://example.com")
 
+        # Assert
         assert urls == []
 
     @patch("scitex_web._scraping.requests.get")
     def test_get_urls_duplicate_removal(self, mock_get):
         """Test that duplicate URLs are removed."""
+        # Arrange
         from scitex_web import get_urls
 
         mock_response = Mock()
@@ -152,14 +362,17 @@ class TestGetUrls:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
+        # Act
         urls = get_urls("https://example.com")
 
         # Should only have one instance of page1
+        # Assert
         assert len(urls) == 1
 
     @patch("scitex_web._scraping.requests.get")
     def test_get_urls_empty_page(self, mock_get):
         """Test handling of page with no links."""
+        # Arrange
         from scitex_web import get_urls
 
         mock_response = Mock()
@@ -167,8 +380,10 @@ class TestGetUrls:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
+        # Act
         urls = get_urls("https://example.com")
 
+        # Assert
         assert urls == []
 
 
@@ -176,10 +391,11 @@ class TestGetImageUrls:
     """Test get_image_urls function."""
 
     @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_basic(self, mock_get):
-        """Test basic image URL extraction."""
+    def test_get_image_urls_basic_len_img_urls_is_3(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import get_image_urls
-
         mock_response = Mock()
         mock_response.text = """
         <html>
@@ -192,18 +408,76 @@ class TestGetImageUrls:
         """
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-
+        # Act
+        # Act
         img_urls = get_image_urls("https://example.com")
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(img_urls) == 3
-        assert "https://example.com/image1.jpg" in img_urls
-        assert "https://example.com/images/image2.png" in img_urls
 
     @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_with_pattern(self, mock_get):
-        """Test image URL extraction with pattern filtering."""
+    def test_get_image_urls_basic_https_example_com_image1_jpg_in_img_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import get_image_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/image1.jpg">
+                <img src="/images/image2.png">
+                <img src="https://example.com/image3.gif">
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        img_urls = get_image_urls("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert "https://example.com/image1.jpg" in img_urls
 
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_image_urls_basic_https_example_com_images_image2_png_in_img_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_image_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/image1.jpg">
+                <img src="/images/image2.png">
+                <img src="https://example.com/image3.gif">
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        img_urls = get_image_urls("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert "https://example.com/images/image2.png" in img_urls
+
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_image_urls_with_pattern_len_img_urls_is_2(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_image_urls
         mock_response = Mock()
         mock_response.text = """
         <html>
@@ -216,17 +490,49 @@ class TestGetImageUrls:
         """
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-
+        # Act
+        # Act
         img_urls = get_image_urls("https://example.com", pattern=r"\.jpg$")
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(img_urls) == 2
-        assert all(url.endswith(".jpg") for url in img_urls)
 
     @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_same_domain(self, mock_get):
-        """Test image URL extraction with same domain filter."""
+    def test_get_image_urls_with_pattern_all_url_endswith_jpg_for_url_in_img_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import get_image_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/image1.jpg">
+                <img src="https://example.com/image2.png">
+                <img src="https://example.com/image3.jpg">
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        img_urls = get_image_urls("https://example.com", pattern=r"\.jpg$")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert all(url.endswith(".jpg") for url in img_urls)
 
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_image_urls_same_domain_len_img_urls_is_2(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_image_urls
         mock_response = Mock()
         mock_response.text = """
         <html>
@@ -239,28 +545,63 @@ class TestGetImageUrls:
         """
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-
+        # Act
+        # Act
         img_urls = get_image_urls("https://example.com", same_domain=True)
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(img_urls) == 2
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_get_image_urls_same_domain_all_example_com_in_url_for_url_in_img_urls(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import get_image_urls
+        mock_response = Mock()
+        mock_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/image1.jpg">
+                <img src="https://cdn.other.com/image2.jpg">
+                <img src="/image3.jpg">
+            </body>
+        </html>
+        """
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
+        # Act
+        # Act
+        img_urls = get_image_urls("https://example.com", same_domain=True)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert all("example.com" in url for url in img_urls)
+
 
     @patch("scitex_web._scraping.requests.get")
     def test_get_image_urls_request_failure(self, mock_get):
         """Test handling of request failures."""
+        # Arrange
         import requests
 
         from scitex_web import get_image_urls
 
         mock_get.side_effect = requests.RequestException("Network error")
 
+        # Act
         img_urls = get_image_urls("https://example.com")
 
+        # Assert
         assert img_urls == []
 
     @patch("scitex_web._scraping.requests.get")
     def test_get_image_urls_no_images(self, mock_get):
         """Test handling of page with no images."""
+        # Arrange
         from scitex_web import get_image_urls
 
         mock_response = Mock()
@@ -268,8 +609,10 @@ class TestGetImageUrls:
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
+        # Act
         img_urls = get_image_urls("https://example.com")
 
+        # Assert
         assert img_urls == []
 
 
@@ -303,10 +646,11 @@ class TestDownloadImages:
             shutil.rmtree(temp_dir)
 
     @patch.object(_download_images_module.requests, "get")
-    def test_download_images_basic(self, mock_get):
-        """Test basic image downloading."""
+    def test_download_images_basic_len_paths_is_2(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import download_images
-
         # Mock page response. `_extract_image_urls` parses `response.content`
         # (not `.text`), so set both for safety.
         page_html = (
@@ -319,17 +663,14 @@ class TestDownloadImages:
         page_response.content = page_html
         page_response.text = page_html.decode()
         page_response.raise_for_status = Mock()
-
         img_response1 = Mock()
         img_response1.content = b"fake image data 1"
         img_response1.headers = {"content-type": "image/jpeg"}
         img_response1.raise_for_status = Mock()
-
         img_response2 = Mock()
         img_response2.content = b"fake image data 2"
         img_response2.headers = {"content-type": "image/png"}
         img_response2.raise_for_status = Mock()
-
         # First call fetches the page; subsequent calls fetch images. Order
         # of image downloads is non-deterministic (concurrent), so map by URL.
         def _side_effect(url, *args, **kwargs):
@@ -338,17 +679,68 @@ class TestDownloadImages:
             if url.endswith(".jpg"):
                 return img_response1
             return img_response2
-
         mock_get.side_effect = _side_effect
-
+        # Act
+        # Act
         paths = download_images(
             "https://example.com",
             output_dir=self.temp_dir,
             min_size=None,  # disable Pillow size filtering
         )
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(paths) == 2
+
+    @patch.object(_download_images_module.requests, "get")
+    def test_download_images_basic_all_path_p_exists_for_p_in_paths(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import download_images
+        # Mock page response. `_extract_image_urls` parses `response.content`
+        # (not `.text`), so set both for safety.
+        page_html = (
+            b"<html><body>"
+            b'<img src="https://example.com/image1.jpg">'
+            b'<img src="https://example.com/image2.png">'
+            b"</body></html>"
+        )
+        page_response = Mock()
+        page_response.content = page_html
+        page_response.text = page_html.decode()
+        page_response.raise_for_status = Mock()
+        img_response1 = Mock()
+        img_response1.content = b"fake image data 1"
+        img_response1.headers = {"content-type": "image/jpeg"}
+        img_response1.raise_for_status = Mock()
+        img_response2 = Mock()
+        img_response2.content = b"fake image data 2"
+        img_response2.headers = {"content-type": "image/png"}
+        img_response2.raise_for_status = Mock()
+        # First call fetches the page; subsequent calls fetch images. Order
+        # of image downloads is non-deterministic (concurrent), so map by URL.
+        def _side_effect(url, *args, **kwargs):
+            if url == "https://example.com":
+                return page_response
+            if url.endswith(".jpg"):
+                return img_response1
+            return img_response2
+        mock_get.side_effect = _side_effect
+        # Act
+        # Act
+        paths = download_images(
+            "https://example.com",
+            output_dir=self.temp_dir,
+            min_size=None,  # disable Pillow size filtering
+        )
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert all(Path(p).exists() for p in paths)
+
 
     @patch.object(_download_images_module.requests, "get")
     def test_download_images_basic_jpg_only(self, mock_get):
@@ -358,6 +750,7 @@ class TestDownloadImages:
         accepts a pattern argument. We just assert the happy path with a
         single image.
         """
+        # Arrange
         from scitex_web import download_images
 
         page_html = (
@@ -375,19 +768,22 @@ class TestDownloadImages:
 
         mock_get.side_effect = [page_response, img_response]
 
+        # Act
         paths = download_images(
             "https://example.com",
             output_dir=self.temp_dir,
             min_size=None,
         )
 
+        # Assert
         assert len(paths) == 1
 
     @patch("scitex_web._scraping.requests.get")
-    def test_download_images_duplicate_filenames(self, mock_get):
-        """Test handling of duplicate filenames."""
+    def test_download_images_duplicate_filenames_len_paths_is_2(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         from scitex_web import download_images
-
         page_response = Mock()
         page_response.text = """
         <html>
@@ -398,36 +794,71 @@ class TestDownloadImages:
         </html>
         """
         page_response.raise_for_status = Mock()
-
         img_response = Mock()
         img_response.content = b"fake image data"
         img_response.headers = {"content-type": "image/jpeg"}
         img_response.raise_for_status = Mock()
-
         mock_get.side_effect = [page_response, img_response, img_response]
-
+        # Act
+        # Act
         paths = download_images("https://example.com", output_dir=self.temp_dir)
-
-        # Should have both images with different filenames
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(paths) == 2
+
+    @patch("scitex_web._scraping.requests.get")
+    def test_download_images_duplicate_filenames_len_set_paths_is_2(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        from scitex_web import download_images
+        page_response = Mock()
+        page_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/dir1/image.jpg">
+                <img src="https://example.com/dir2/image.jpg">
+            </body>
+        </html>
+        """
+        page_response.raise_for_status = Mock()
+        img_response = Mock()
+        img_response.content = b"fake image data"
+        img_response.headers = {"content-type": "image/jpeg"}
+        img_response.raise_for_status = Mock()
+        mock_get.side_effect = [page_response, img_response, img_response]
+        # Act
+        # Act
+        paths = download_images("https://example.com", output_dir=self.temp_dir)
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(set(paths)) == 2  # All paths are unique
+
 
     @patch("scitex_web._scraping.requests.get")
     def test_download_images_request_failure(self, mock_get):
         """Test handling of request failures."""
+        # Arrange
         import requests
 
         from scitex_web import download_images
 
         mock_get.side_effect = requests.RequestException("Network error")
 
+        # Act
         paths = download_images("https://example.com", output_dir=self.temp_dir)
 
+        # Assert
         assert paths == []
 
     @patch("scitex_web._scraping.requests.get")
     def test_download_images_same_domain(self, mock_get):
         """Test downloading only images from same domain."""
+        # Arrange
         from scitex_web import download_images
 
         page_response = Mock()
@@ -448,21 +879,23 @@ class TestDownloadImages:
 
         mock_get.side_effect = [page_response, img_response]
 
+        # Act
         paths = download_images(
             "https://example.com", output_dir=self.temp_dir, same_domain=True
         )
 
         # Should only download the first image
+        # Assert
         assert len(paths) == 1
 
     @patch("scitex_web._scraping.requests.get")
     @patch.dict("os.environ", {}, clear=True)
-    def test_download_images_no_output_dir(self, mock_get):
-        """Test default output directory creation using SCITEX_DIR."""
+    def test_download_images_no_output_dir_len_paths_is_1(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         import os
-
         from scitex_web import download_images
-
         page_response = Mock()
         page_response.text = """
         <html>
@@ -472,34 +905,99 @@ class TestDownloadImages:
         </html>
         """
         page_response.raise_for_status = Mock()
-
         img_response = Mock()
         img_response.content = b"fake image data"
         img_response.headers = {"content-type": "image/jpeg"}
         img_response.raise_for_status = Mock()
-
         mock_get.side_effect = [page_response, img_response]
-
         # Set SCITEX_DIR to a temp location for testing
         test_scitex_dir = Path(self.temp_dir) / "scitex"
         os.environ["SCITEX_DIR"] = str(test_scitex_dir)
-
+        # Act
+        # Act
         paths = download_images("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        # Assert
+        assert len(paths) == 1
 
+    @patch("scitex_web._scraping.requests.get")
+    @patch.dict("os.environ", {}, clear=True)
+    def test_download_images_no_output_dir_expected_dir_exists_len_paths_is_1(self, mock_get):
+        # Arrange
+        # Arrange
+        import os
+        from scitex_web import download_images
+        page_response = Mock()
+        page_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/image.jpg">
+            </body>
+        </html>
+        """
+        page_response.raise_for_status = Mock()
+        img_response = Mock()
+        img_response.content = b"fake image data"
+        img_response.headers = {"content-type": "image/jpeg"}
+        img_response.raise_for_status = Mock()
+        mock_get.side_effect = [page_response, img_response]
+        # Set SCITEX_DIR to a temp location for testing
+        test_scitex_dir = Path(self.temp_dir) / "scitex"
+        os.environ["SCITEX_DIR"] = str(test_scitex_dir)
+        # Act
+        paths = download_images("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        assert len(paths) == 1
+
+    @patch("scitex_web._scraping.requests.get")
+    @patch.dict("os.environ", {}, clear=True)
+    def test_download_images_no_output_dir_expected_dir_exists_expected_dir_exists(self, mock_get):
+        # Arrange
+        # Arrange
+        import os
+        from scitex_web import download_images
+        page_response = Mock()
+        page_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/image.jpg">
+            </body>
+        </html>
+        """
+        page_response.raise_for_status = Mock()
+        img_response = Mock()
+        img_response.content = b"fake image data"
+        img_response.headers = {"content-type": "image/jpeg"}
+        img_response.raise_for_status = Mock()
+        mock_get.side_effect = [page_response, img_response]
+        # Set SCITEX_DIR to a temp location for testing
+        test_scitex_dir = Path(self.temp_dir) / "scitex"
+        os.environ["SCITEX_DIR"] = str(test_scitex_dir)
+        # Act
+        paths = download_images("https://example.com")
+        # Assert
         assert len(paths) == 1
         expected_dir = test_scitex_dir / "web" / "downloads"
+        # Act
+        # Assert
         assert expected_dir.exists()
+
+
 
     @patch("scitex_web._scraping.requests.get")
     @patch.dict(
         "os.environ", {"SCITEX_WEB_DOWNLOADS_DIR": "/tmp/test_downloads"}, clear=True
     )
-    def test_download_images_env_var_priority(self, mock_get):
-        """Test that SCITEX_WEB_DOWNLOADS_DIR takes priority."""
+    def test_download_images_env_var_priority_len_paths_is_1(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
         import os
-
         from scitex_web import download_images
-
         page_response = Mock()
         page_response.text = """
         <html>
@@ -509,29 +1007,66 @@ class TestDownloadImages:
         </html>
         """
         page_response.raise_for_status = Mock()
-
         img_response = Mock()
         img_response.content = b"fake image data"
         img_response.headers = {"content-type": "image/jpeg"}
         img_response.raise_for_status = Mock()
-
         mock_get.side_effect = [page_response, img_response]
-
         # Set both env vars
         os.environ["SCITEX_DIR"] = "/tmp/scitex"
         os.environ["SCITEX_WEB_DOWNLOADS_DIR"] = self.temp_dir
-
+        # Act
+        # Act
         paths = download_images("https://example.com")
-
-        # Should use SCITEX_WEB_DOWNLOADS_DIR, not SCITEX_DIR
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert len(paths) == 1
+
+    @patch("scitex_web._scraping.requests.get")
+    @patch.dict(
+        "os.environ", {"SCITEX_WEB_DOWNLOADS_DIR": "/tmp/test_downloads"}, clear=True
+    )
+    def test_download_images_env_var_priority_paths_0_startswith_self_temp_dir(self, mock_get):
+        # Arrange
+        # Arrange
+        # Arrange
+        import os
+        from scitex_web import download_images
+        page_response = Mock()
+        page_response.text = """
+        <html>
+            <body>
+                <img src="https://example.com/image.jpg">
+            </body>
+        </html>
+        """
+        page_response.raise_for_status = Mock()
+        img_response = Mock()
+        img_response.content = b"fake image data"
+        img_response.headers = {"content-type": "image/jpeg"}
+        img_response.raise_for_status = Mock()
+        mock_get.side_effect = [page_response, img_response]
+        # Set both env vars
+        os.environ["SCITEX_DIR"] = "/tmp/scitex"
+        os.environ["SCITEX_WEB_DOWNLOADS_DIR"] = self.temp_dir
+        # Act
+        # Act
+        paths = download_images("https://example.com")
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert paths[0].startswith(self.temp_dir)
+
 
     @patch("scitex_web._scraping.requests.get")
     @patch("scitex_web._scraping.PILLOW_AVAILABLE", True)
     @patch("scitex_web._scraping.Image.open")
     def test_download_images_min_size_filter(self, mock_image_open, mock_get):
         """Test minimum size filtering."""
+        # Arrange
         from scitex_web import download_images
 
         page_response = Mock()
@@ -564,28 +1099,97 @@ class TestDownloadImages:
         mock_image_open.side_effect = [small_img, large_img]
         mock_get.side_effect = [page_response, img_response_small, img_response_large]
 
+        # Act
         paths = download_images(
             "https://example.com", output_dir=self.temp_dir, min_size=(100, 100)
         )
 
         # Only the large image should be downloaded
+        # Assert
         assert len(paths) == 1
 
 
 class TestScrapingModuleImport:
     """Test that scraping functions are properly exported."""
 
-    def test_scraping_functions_available(self):
-        """Test that all scraping functions are available."""
+    def test_scraping_functions_available_hasattr_scitex_web_get_urls(self):
+        # Arrange
+        # Arrange
+        # Act
+        # Arrange
+        # Act
         import scitex_web
-
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert hasattr(scitex_web, "get_urls")
+
+    def test_scraping_functions_available_hasattr_scitex_web_download_images(self):
+        # Arrange
+        # Arrange
+        # Act
+        # Arrange
+        # Act
+        import scitex_web
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert hasattr(scitex_web, "download_images")
+
+    def test_scraping_functions_available_hasattr_scitex_web_get_image_urls(self):
+        # Arrange
+        # Arrange
+        # Act
+        # Arrange
+        # Act
+        import scitex_web
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert hasattr(scitex_web, "get_image_urls")
 
+    def test_scraping_functions_available_callable_scitex_web_get_urls(self):
+        # Arrange
+        # Arrange
+        # Act
+        # Arrange
+        # Act
+        import scitex_web
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert callable(scitex_web.get_urls)
+
+    def test_scraping_functions_available_callable_scitex_web_download_images(self):
+        # Arrange
+        # Arrange
+        # Act
+        # Arrange
+        # Act
+        import scitex_web
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert callable(scitex_web.download_images)
+
+    def test_scraping_functions_available_callable_scitex_web_get_image_urls(self):
+        # Arrange
+        # Arrange
+        # Act
+        # Arrange
+        # Act
+        import scitex_web
+        # Act
+        # Assert
+        # Assert
+        # Assert
         assert callable(scitex_web.get_image_urls)
+
 
 
 if __name__ == "__main__":
