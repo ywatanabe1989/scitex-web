@@ -1,16 +1,10 @@
-# Codecov configuration — see https://docs.codecov.com/docs/codecovyml-reference
-# The target is "auto" while the package is still ramping its coverage; once
-# the test suite reaches 90% steadily, swap to:
-#
-#   coverage:
-#     status:
-#       project:
-#         default:
-#           target: 90%
-#
-# The subprocess-coverage wiring in tests/conftest.py + the parallel
-# coverage config in pyproject.toml feed this number; see skill leaf
-# 05_development_06_subprocess-coverage.md.
+codecov:
+  require_ci_to_pass: false
+  # Treat develop as the de-facto default branch — main is a stable
+  # release mirror that only fast-forwards from develop, so develop
+  # is where coverage uploads land. This makes the unbranched badge
+  # endpoint (/graph/badge.svg) follow develop's value.
+  branch: develop
 
 coverage:
   status:
@@ -22,4 +16,14 @@ coverage:
       default:
         target: 80%
 
-comment: false
+ignore:
+  - "src/scitex_web/_sphinx_html/**"
+  - "src/scitex_web/_skills/**"
+  - "src/scitex_web/_completion.py"
+  - "src/scitex_web/_cli/_completion.py"
+  - "tests/**"
+  - "examples/**"
+
+comment:
+  layout: "diff, files"
+  require_changes: true
