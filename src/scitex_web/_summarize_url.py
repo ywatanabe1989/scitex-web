@@ -78,7 +78,14 @@ def extract_main_content(html):
     return content
 
 
-def crawl_url(url, max_depth=1):
+def crawl_url(url, max_depth=1, *, http_get=None):
+    """Breadth-first crawl from ``url`` up to ``max_depth`` hops.
+
+    ``http_get`` is the injected HTTP GET callable; defaults to
+    :func:`requests.get`. Tests pass a hand-rolled fake.
+    """
+    if http_get is None:
+        http_get = requests.get
     print("\nCrawling...")
     visited = set()
     to_visit = [(url, 0)]
@@ -90,7 +97,7 @@ def crawl_url(url, max_depth=1):
             continue
 
         try:
-            response = requests.get(current_url)
+            response = http_get(current_url)
             if response.status_code == 200:
                 visited.add(current_url)
                 main_content = extract_main_content(response.text)

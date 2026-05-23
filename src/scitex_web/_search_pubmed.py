@@ -60,7 +60,16 @@ class _ScitexShim:
 scitex = _ScitexShim()
 
 
-def _search_pubmed(query: str, retmax: int = 300) -> Dict[str, Any]:
+def _search_pubmed(
+    query: str, retmax: int = 300, *, http_get=None
+) -> Dict[str, Any]:
+    """Search PubMed for ``query``; return parsed JSON or ``{}`` on failure.
+
+    ``http_get`` is the injected HTTP GET callable; defaults to
+    :func:`requests.get`. Tests pass a hand-rolled fake.
+    """
+    if http_get is None:
+        http_get = requests.get
     try:
         base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
         search_url = f"{base_url}esearch.fcgi"
@@ -72,7 +81,7 @@ def _search_pubmed(query: str, retmax: int = 300) -> Dict[str, Any]:
             "usehistory": "y",
         }
 
-        response = requests.get(search_url, params=params, timeout=10)
+        response = http_get(search_url, params=params, timeout=10)
         if not response.ok:
             scitex.str.printc("PubMed API request failed", c="red")
             return {}
@@ -83,19 +92,30 @@ def _search_pubmed(query: str, retmax: int = 300) -> Dict[str, Any]:
 
 
 def _fetch_details(
-    webenv: str, query_key: str, retstart: int = 0, retmax: int = 100
+    webenv: str,
+    query_key: str,
+    retstart: int = 0,
+    retmax: int = 100,
+    *,
+    http_get=None,
 ) -> Dict[str, Any]:
     """Fetches detailed information including abstracts for articles.
 
     Parameters
     ----------
-    [Previous parameters remain the same]
+    webenv, query_key, retstart, retmax
+        Forwarded to NCBI E-utilities.
+    http_get
+        Injected HTTP GET callable; defaults to :func:`requests.get`.
+        Tests pass a hand-rolled fake.
 
     Returns
     -------
     Dict[str, Any]
         Dictionary containing article details and abstracts
     """
+    if http_get is None:
+        http_get = requests.get
     base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
 
     # Fetch abstracts
@@ -111,7 +131,7 @@ def _fetch_details(
         "field": "abstract,mesh",
     }
 
-    abstract_response = requests.get(efetch_url, params=efetch_params)
+    abstract_response = http_get(efetch_url, params=efetch_params)
 
     # Fetch metadata
     fetch_url = f"{base_url}esummary.fcgi"
@@ -124,7 +144,7 @@ def _fetch_details(
         "retmode": "json",
     }
 
-    details_response = requests.get(fetch_url, params=params)
+    details_response = http_get(fetch_url, params=params)
 
     if not all([abstract_response.ok, details_response.ok]):
         # print(f"Error fetching data")
@@ -171,19 +191,24 @@ def _parse_abstract_xml(xml_text: str) -> Dict[str, tuple]:
     return results
 
 
-def _get_citation(pmid: str) -> str:
+def _get_citation(pmid: str, *, http_get=None) -> str:
     """Gets official citation in BibTeX format.
 
     Parameters
     ----------
     pmid : str
         PubMed ID
+    http_get
+        Injected HTTP GET callable; defaults to :func:`requests.get`.
+        Tests pass a hand-rolled fake.
 
     Returns
     -------
     str
         Official BibTeX citation
     """
+    if http_get is None:
+        http_get = requests.get
     base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
     cite_url = f"{base_url}efetch.fcgi"
     params = {
@@ -192,16 +217,26 @@ def _get_citation(pmid: str) -> str:
         "rettype": "bibtex",
         "retmode": "text",
     }
-    response = requests.get(cite_url, params=params)
+    response = http_get(cite_url, params=params)
     return response.text if response.ok else ""
 
 
 def get_crossref_metrics(
-    doi: str, api_key: Optional[str] = None, email: Optional[str] = None
+    doi: str,
+    api_key: Optional[str] = None,
+    email: Optional[str] = None,
+    *,
+    http_get=None,
 ) -> Dict[str, Any]:
-    """Get article metrics from CrossRef using DOI."""
+    """Get article metrics from CrossRef using DOI.
+
+    ``http_get`` is the injected HTTP GET callable; defaults to
+    :func:`requests.get`. Tests pass a hand-rolled fake.
+    """
     import os
 
+    if http_get is None:
+        http_get = requests.get
     base_url = "https://api.crossref.org/works/"
 
     # Use provided email or fallback to environment variables
@@ -220,7 +255,7 @@ def get_crossref_metrics(
         params["key"] = api_key
 
     try:
-        response = requests.get(
+        response = http_get(
             f"{base_url}{doi}", headers=headers, params=params, timeout=10
         )
         if response.ok:
