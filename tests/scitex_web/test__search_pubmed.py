@@ -490,13 +490,13 @@ class TestGetCrossrefMetrics:
         # Assert
         assert metrics["citations"] == 42
 
-    def test_extracts_type(self, metrics):
+    def test_extracts_type_from_message(self, metrics):
         # Arrange
         # Act
         # Assert
         assert metrics["type"] == "journal-article"
 
-    def test_extracts_publisher(self, metrics):
+    def test_extracts_publisher_from_message(self, metrics):
         # Arrange
         # Act
         # Assert
@@ -508,7 +508,7 @@ class TestGetCrossrefMetrics:
         # Assert
         assert metrics["references"] == 3
 
-    def test_extracts_doi(self, metrics):
+    def test_extracts_doi_from_message(self, metrics):
         # Arrange
         # Act
         # Assert
