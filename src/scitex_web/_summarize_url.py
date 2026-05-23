@@ -78,7 +78,14 @@ def extract_main_content(html):
     return content
 
 
-def crawl_url(url, max_depth=1):
+def crawl_url(url, max_depth=1, *, http_get=None):
+    """Breadth-first crawl from ``url`` up to ``max_depth`` hops.
+
+    ``http_get`` is the injected HTTP GET callable; defaults to
+    :func:`requests.get`. Tests pass a hand-rolled fake.
+    """
+    if http_get is None:
+        http_get = requests.get
     print("\nCrawling...")
     visited = set()
     to_visit = [(url, 0)]
@@ -90,7 +97,7 @@ def crawl_url(url, max_depth=1):
             continue
 
         try:
-            response = requests.get(current_url)
+            response = http_get(current_url)
             if response.status_code == 200:
                 visited.add(current_url)
                 main_content = extract_main_content(response.text)
@@ -108,15 +115,25 @@ def crawl_url(url, max_depth=1):
     return visited, contents
 
 
-def crawl_to_json(start_url):
+def crawl_to_json(start_url, *, http_get=None, llm=None):
+    """Crawl ``start_url`` and return a JSON summary of each visited page.
+
+    ``http_get`` is the injected HTTP GET callable; defaults to
+    :func:`requests.get`. ``llm`` is the injected language-model callable
+    used to summarise each page (signature ``str -> str``); defaults to a
+    fresh ``scitex_ai.GenAI("gpt-4o-mini")`` instance. Tests pass
+    hand-rolled fakes.
+    """
     if not start_url.startswith("http"):
         start_url = "https://" + start_url
-    crawled_urls, contents = crawl_url(start_url)
+    crawled_urls, contents = crawl_url(start_url, http_get=http_get)
+
+    if llm is None:
+        llm = _get_genai("gpt-4o-mini")
 
     print("\nSummalizing as json...")
 
     def process_url(url):
-        llm = _get_genai("gpt-4o-mini")
         return {
             "url": url,
             "content": llm(f"Summarize this page in 1 line:\n\n{contents[url]}"),
@@ -149,15 +166,28 @@ def _get_genai(model: str):
     return GenAI(model)
 
 
-def summarize_all(json_contents):
-    llm = _get_genai("gpt-4o-mini")
+def summarize_all(json_contents, *, llm=None):
+    """Return a 5-bullet summary of ``json_contents``.
+
+    ``llm`` is the injected language-model callable (signature
+    ``str -> str``). Defaults to a fresh ``scitex_ai.GenAI("gpt-4o-mini")``.
+    Tests pass a hand-rolled fake.
+    """
+    if llm is None:
+        llm = _get_genai("gpt-4o-mini")
     out = llm(f"Summarize this json file with 5 bullet points:\n\n{json_contents}")
     return out
 
 
-def summarize_url(start_url):
-    json_result = crawl_to_json(start_url)
-    ground_summary = summarize_all(json_result)
+def summarize_url(start_url, *, http_get=None, llm=None):
+    """Crawl ``start_url``, summarise each page, and return the rolled-up summary.
+
+    ``http_get`` and ``llm`` are injected collaborators; defaults are
+    :func:`requests.get` and a fresh ``scitex_ai.GenAI`` instance. Tests
+    pass hand-rolled fakes.
+    """
+    json_result = crawl_to_json(start_url, http_get=http_get, llm=llm)
+    ground_summary = summarize_all(json_result, llm=llm)
 
     pprint(ground_summary)
     return ground_summary, json_result

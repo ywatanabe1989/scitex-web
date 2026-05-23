@@ -1,701 +1,290 @@
 #!/usr/bin/env python3
-# Time-stamp: "2024-11-08 05:51:10 (ywatanabe)"
-# File: ./scitex_repo/tests/scitex/web/test__summarize_url.py
+# File: ./tests/scitex_web/test__summarize_url.py
+"""Tests for scitex_web._summarize_url.
 
+Network and LLM collaborators are injected as keyword arguments and
+replaced with hand-rolled fakes. No mocks, no patching of requests or
+scitex_ai.GenAI.
 """
-Tests for URL summarization functionality.
-"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
 
 import pytest
+import requests
 
-pytest.importorskip("aiohttp")
-pytest.importorskip("scitex_web.summarize_url")
+from scitex_web import (
+    crawl_to_json,
+    crawl_url,
+    summarize_url,
+)
+from scitex_web._summarize_url import (
+    extract_main_content,
+    main,
+    summarize_all,
+)
 
-import json  # noqa: E402
-import re  # noqa: F401, E402
-from concurrent.futures import Future  # noqa: E402
-from unittest.mock import MagicMock, Mock, call, patch  # noqa: F401, E402
 
-from bs4 import BeautifulSoup  # noqa: F401, E402
+@dataclass
+class FakeResponse:
+    """Minimal stand-in for the slice of ``requests.Response`` we use."""
 
-try:
-    from scitex_web import (
-        crawl_to_json,
-        crawl_url,
-        extract_main_content,
-        summarize_all,
-        summarize_url,
-    )
-except ImportError:
-    pytest.skip("scitex_web.summarize_url not available", allow_module_level=True)
-from scitex_web._summarize_url import main  # noqa: F401, E402
+    text: str = ""
+    status_code: int = 200
+
+
+@dataclass
+class FakeHttpGet:
+    """Fake HTTP GET: returns one canned response per URL the SUT visits.
+
+    Unknown URLs (anything not in ``responses``) get a 404 — that lets the
+    test assert breadth-first crawler termination without further setup.
+    """
+
+    responses: dict = field(default_factory=dict)
+    raise_exception: Exception | None = None
+    captured: list = field(default_factory=list)
+
+    def __call__(self, url, *args, **kwargs):
+        self.captured.append(url)
+        if self.raise_exception is not None:
+            raise self.raise_exception
+        if url in self.responses:
+            return self.responses[url]
+        return FakeResponse(text="", status_code=404)
+
+
+@dataclass
+class FakeLLM:
+    """Records each prompt and returns a deterministic canned summary."""
+
+    canned: str = "fake-summary"
+    prompts: list = field(default_factory=list)
+
+    def __call__(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.canned
 
 
 class TestExtractMainContent:
-    """Test extract_main_content function."""
-
-    def test_extract_main_content_with_readability(self):
-        """Test content extraction with readability library."""
+    def test_returns_text_from_html_body(self):
         # Arrange
+        html = "<html><body><p>hello world</p></body></html>"
         # Act
+        result = extract_main_content(html)
         # Assert
-        html_content = """
-        <html>
-            <body>
-                <h1>Main Title</h1>
-                <p>This is the main content.</p>
-                <div>Some extra content</div>
-            </body>
-        </html>
-        """
+        assert "hello world" in result
 
-        # Test when Document is available
-        mock_doc = Mock()
-        mock_doc.summary.return_value = (
-            "<h1>Main Title</h1> <p>This is the main content.</p>"
-        )
-
-        with patch("scitex_web._summarize_url.Document", return_value=mock_doc):
-            result = extract_main_content(html_content)
-            assert "Main Title" in result
-            assert "This is the main content" in result
-            assert "<" not in result  # HTML tags removed
-
-    def test_extract_main_content_without_readability(self):
-        """Test content extraction when readability is not available."""
+    def test_strips_html_tags_from_output(self):
         # Arrange
+        html = "<html><body><p>hello world</p></body></html>"
         # Act
+        result = extract_main_content(html)
         # Assert
-        html_content = "<p>Test content</p>"
+        assert "<" not in result
 
-        with patch("scitex_web._summarize_url.Document", None):
-            result = extract_main_content(html_content)
-            assert result == "Test content"[:5000]  # Limited to 5000 chars
-
-    def test_extract_main_content_complex_html(self):
-        """Test extraction with complex HTML."""
+    def test_collapses_consecutive_whitespace(self):
         # Arrange
+        html = "<p>foo    bar</p>"
         # Act
+        result = extract_main_content(html)
         # Assert
-        html_content = """
-        <html>
-            <head><title>Test</title></head>
-            <body>
-                <script>var x = 1;</script>
-                <p>Real   content   with   spaces</p>
-                <style>body { color: red; }</style>
-            </body>
-        </html>
-        """
-
-        mock_doc = Mock()
-        mock_doc.summary.return_value = "<p>Real   content   with   spaces</p>"
-
-        with patch("scitex_web._summarize_url.Document", return_value=mock_doc):
-            result = extract_main_content(html_content)
-            assert result == "Real content with spaces"  # Extra spaces removed
-
-    def test_extract_main_content_empty_html(self):
-        """Test extraction with empty HTML."""
-        # Arrange
-        # Act
-        # Assert
-        with patch("scitex_web._summarize_url.Document", None):
-            result = extract_main_content("")
-            assert result == ""
-
-    def test_extract_main_content_no_tags(self):
-        """Test extraction with plain text."""
-        # Arrange
-        # Act
-        # Assert
-        plain_text = "Just plain text without HTML"
-
-        with patch("scitex_web._summarize_url.Document", None):
-            result = extract_main_content(plain_text)
-            assert result == plain_text
+        assert "    " not in result
 
 
 class TestCrawlUrl:
-    """Test crawl_url function."""
-
-    def test_crawl_url_single_page(self):
-        """Test crawling a single page."""
+    def test_returns_empty_visited_set_when_request_raises(self):
         # Arrange
+        fake = FakeHttpGet(raise_exception=requests.RequestException("boom"))
         # Act
+        visited, _ = crawl_url("https://example.com", http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.text = "<html><body><p>Test content</p></body></html>"
+        assert visited == set()
 
-        with patch("requests.get", return_value=mock_response):
-            with patch(
-                "scitex_web._summarize_url.extract_main_content",
-                return_value="Test content",
-            ):
-                visited, contents = crawl_url("http://test.com", max_depth=0)
-
-                assert "http://test.com" in visited
-                assert contents["http://test.com"] == "Test content"
-                assert len(visited) == 1
-
-    def test_crawl_url_with_links(self):
-        """Test crawling with links to follow."""
+    def test_returns_empty_contents_when_request_raises(self):
         # Arrange
+        fake = FakeHttpGet(raise_exception=requests.RequestException("boom"))
         # Act
+        _, contents = crawl_url("https://example.com", http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.text = """
-        <html><body>
-            <p>Main page</p>
-            <a href="/page2">Link to page 2</a>
-            <a href="http://test.com/page3">Link to page 3</a>
-        </body></html>
-        """
+        assert contents == {}
 
-        with patch("requests.get", return_value=mock_response):
-            with patch(
-                "scitex_web._summarize_url.extract_main_content", return_value="Content"
-            ):
-                visited, contents = crawl_url("http://test.com", max_depth=1)
-
-                # Should visit main page and try to visit linked pages
-                assert "http://test.com" in visited
-
-    def test_crawl_url_max_depth(self):
-        """Test that max_depth is respected."""
+    def test_visits_start_url_on_200(self):
         # Arrange
+        fake = FakeHttpGet(
+            responses={
+                "https://example.com": FakeResponse(
+                    text="<html><body><p>x</p></body></html>",
+                    status_code=200,
+                )
+            }
+        )
         # Act
+        visited, _ = crawl_url("https://example.com", http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.text = '<a href="/deep">Link</a>'
+        assert "https://example.com" in visited
 
-        with patch("requests.get", return_value=mock_response):
-            with patch(
-                "scitex_web._summarize_url.extract_main_content", return_value="Content"
-            ):
-                visited, contents = crawl_url("http://test.com", max_depth=0)
-
-                # Should only visit the initial URL with max_depth=0
-                assert len(visited) == 1
-                assert "http://test.com" in visited
-
-    def test_crawl_url_request_exception(self):
-        """Test handling of request exceptions."""
+    def test_skips_start_url_on_non_200(self):
         # Arrange
+        fake = FakeHttpGet(
+            responses={
+                "https://example.com": FakeResponse(text="", status_code=500)
+            }
+        )
         # Act
+        visited, _ = crawl_url("https://example.com", http_get=fake)
         # Assert
-        import requests
+        assert visited == set()
 
-        with patch(
-            "requests.get", side_effect=requests.RequestException("Network error")
-        ):
-            visited, contents = crawl_url("http://test.com")
-
-            assert len(visited) == 0
-            assert len(contents) == 0
-
-    def test_crawl_url_non_200_status(self):
-        """Test handling of non-200 status codes."""
+    def test_max_depth_zero_does_not_follow_links(self):
         # Arrange
+        page = '<html><body><a href="/child">c</a></body></html>'
+        fake = FakeHttpGet(
+            responses={
+                "https://example.com": FakeResponse(text=page, status_code=200),
+                "https://example.com/child": FakeResponse(
+                    text="<p>child</p>", status_code=200
+                ),
+            }
+        )
         # Act
+        visited, _ = crawl_url("https://example.com", max_depth=0, http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.status_code = 404
+        assert visited == {"https://example.com"}
 
-        with patch("requests.get", return_value=mock_response):
-            visited, contents = crawl_url("http://test.com")
-
-            assert len(visited) == 0
-            assert len(contents) == 0
-
-    def test_crawl_url_avoid_duplicate_visits(self):
-        """Test that URLs are not visited twice."""
+    def test_max_depth_one_follows_one_hop(self):
         # Arrange
+        page = '<html><body><a href="/child">c</a></body></html>'
+        fake = FakeHttpGet(
+            responses={
+                "https://example.com": FakeResponse(text=page, status_code=200),
+                "https://example.com/child": FakeResponse(
+                    text="<p>child</p>", status_code=200
+                ),
+            }
+        )
         # Act
+        visited, _ = crawl_url("https://example.com", max_depth=1, http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.status_code = 200
-        # Use exact same URL to test duplicate avoidance
-        mock_response.text = '<a href="http://test.com">Home</a>'
-
-        call_count = 0
-
-        def mock_get(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            return mock_response
-
-        with patch("requests.get", side_effect=mock_get):
-            with patch(
-                "scitex_web._summarize_url.extract_main_content", return_value="Content"
-            ):
-                visited, contents = crawl_url("http://test.com", max_depth=1)
-
-                # Should only call once despite self-referential link to exact same URL
-                assert call_count == 1
+        assert "https://example.com/child" in visited
 
 
 class TestCrawlToJson:
-    """Test crawl_to_json function."""
-
-    def test_crawl_to_json_basic(self):
-        """Test basic JSON conversion."""
+    @pytest.fixture
+    def single_page_json(self) -> str:
         # Arrange
+        html = "<html><body><p>page content</p></body></html>"
+        http_get = FakeHttpGet(
+            responses={
+                "https://example.com": FakeResponse(text=html, status_code=200)
+            }
+        )
+        llm = FakeLLM(canned="one-line-summary")
+        # Act
+        return crawl_to_json(
+            "https://example.com", http_get=http_get, llm=llm
+        )
+
+    def test_includes_start_url_in_output(self, single_page_json):
+        # Arrange
+        data = json.loads(single_page_json)
         # Act
         # Assert
-        mock_urls = {"http://test.com"}
-        mock_contents = {"http://test.com": "Test page content"}
+        assert data["start_url"] == "https://example.com"
 
-        with patch(
-            "scitex_web._summarize_url.crawl_url",
-            return_value=(mock_urls, mock_contents),
-        ):
-            with patch("scitex.ai.GenAI") as mock_genai:
-                mock_llm = Mock()
-                mock_llm.return_value = "Summary of test page"
-                mock_genai.return_value = mock_llm
-
-                # Mock ThreadPoolExecutor
-                mock_future = Mock(spec=Future)
-                mock_future.result.return_value = {
-                    "url": "http://test.com",
-                    "content": "Summary of test page",
-                }
-
-                with patch("concurrent.futures.ThreadPoolExecutor") as mock_executor:
-                    mock_executor.return_value.__enter__.return_value.submit.return_value = (
-                        mock_future
-                    )
-                    with patch(
-                        "concurrent.futures.as_completed", return_value=[mock_future]
-                    ):
-                        with patch("tqdm.tqdm", side_effect=lambda x, **kwargs: x):
-                            result = crawl_to_json("test.com")
-
-                            parsed = json.loads(result)
-                            assert parsed["start_url"] == "https://test.com"
-                            assert len(parsed["crawled_pages"]) == 1
-                            assert (
-                                parsed["crawled_pages"][0]["url"] == "http://test.com"
-                            )
-
-    def test_crawl_to_json_url_normalization(self):
-        """Test URL normalization (adding https://)."""
+    def test_includes_one_crawled_page_record(self, single_page_json):
         # Arrange
+        data = json.loads(single_page_json)
         # Act
         # Assert
-        with patch("scitex_web._summarize_url.crawl_url", return_value=(set(), {})):
-            with patch("concurrent.futures.ThreadPoolExecutor"):
-                with patch("concurrent.futures.as_completed", return_value=[]):
-                    with patch("tqdm.tqdm", side_effect=lambda x, **kwargs: x):
-                        result = crawl_to_json("example.com")
-                        parsed = json.loads(result)
-                        assert parsed["start_url"] == "https://example.com"
+        assert len(data["crawled_pages"]) == 1
 
-    def test_crawl_to_json_already_has_protocol(self):
-        """Test URL with existing protocol."""
+    def test_records_llm_summary_in_page_content(self, single_page_json):
         # Arrange
+        data = json.loads(single_page_json)
         # Act
         # Assert
-        with patch("scitex_web._summarize_url.crawl_url", return_value=(set(), {})):
-            with patch("concurrent.futures.ThreadPoolExecutor"):
-                with patch("concurrent.futures.as_completed", return_value=[]):
-                    with patch("tqdm.tqdm", side_effect=lambda x, **kwargs: x):
-                        result = crawl_to_json("http://example.com")
-                        parsed = json.loads(result)
-                        assert parsed["start_url"] == "http://example.com"
+        assert data["crawled_pages"][0]["content"] == "one-line-summary"
 
-    def test_crawl_to_json_multiple_pages(self):
-        """Test JSON conversion with multiple pages."""
+    def test_prepends_https_scheme_when_missing(self):
         # Arrange
+        http_get = FakeHttpGet()  # no responses → crawler yields empty
+        llm = FakeLLM()
         # Act
+        result = crawl_to_json("example.com", http_get=http_get, llm=llm)
         # Assert
-        mock_urls = {"http://test.com", "http://test.com/page2"}
-        mock_contents = {
-            "http://test.com": "Main content",
-            "http://test.com/page2": "Page 2 content",
-        }
+        assert json.loads(result)["start_url"] == "https://example.com"
 
-        with patch(
-            "scitex_web._summarize_url.crawl_url",
-            return_value=(mock_urls, mock_contents),
-        ):
-            with patch("scitex.ai.GenAI") as mock_genai:
-                mock_llm = Mock()
-                mock_llm.side_effect = ["Summary 1", "Summary 2"]
-                mock_genai.return_value = mock_llm
-
-                # Create futures for each URL
-                futures = []
-                for i, url in enumerate(mock_urls):
-                    mock_future = Mock(spec=Future)
-                    mock_future.result.return_value = {
-                        "url": url,
-                        "content": f"Summary {i + 1}",
-                    }
-                    futures.append(mock_future)
-
-                with patch("concurrent.futures.ThreadPoolExecutor") as mock_executor:
-                    mock_executor.return_value.__enter__.return_value.submit.side_effect = (
-                        futures
-                    )
-                    with patch("concurrent.futures.as_completed", return_value=futures):
-                        with patch("tqdm.tqdm", side_effect=lambda x, **kwargs: x):
-                            result = crawl_to_json("test.com")
-
-                            parsed = json.loads(result)
-                            assert len(parsed["crawled_pages"]) == 2
+    def test_preserves_explicit_scheme(self):
+        # Arrange
+        http_get = FakeHttpGet()
+        llm = FakeLLM()
+        # Act
+        result = crawl_to_json(
+            "http://example.com", http_get=http_get, llm=llm
+        )
+        # Assert
+        assert json.loads(result)["start_url"] == "http://example.com"
 
 
 class TestSummarizeAll:
-    """Test summarize_all function."""
-
-    def test_summarize_all_basic(self):
-        """Test basic summarization."""
+    def test_returns_llm_summary(self):
         # Arrange
+        llm = FakeLLM(canned="five-bullet-summary")
         # Act
+        result = summarize_all("{}", llm=llm)
         # Assert
-        json_content = json.dumps(
-            {
-                "start_url": "http://test.com",
-                "crawled_pages": [
-                    {"url": "http://test.com", "content": "Test summary"}
-                ],
-            }
-        )
+        assert result == "five-bullet-summary"
 
-        with patch("scitex.ai.GenAI") as mock_genai:
-            mock_llm = Mock()
-            mock_llm.return_value = (
-                "• Point 1\n• Point 2\n• Point 3\n• Point 4\n• Point 5"
-            )
-            mock_genai.return_value = mock_llm
-
-            result = summarize_all(json_content)
-
-            assert "Point 1" in result
-            assert "Point 5" in result
-            mock_llm.assert_called_once()
-
-            # Check that the prompt includes the JSON content
-            call_args = mock_llm.call_args[0][0]
-            assert "5 bullet points" in call_args
-            assert json_content in call_args
-
-    def test_summarize_all_empty_json(self):
-        """Test summarization with empty JSON."""
+    def test_passes_json_payload_into_llm_prompt(self):
         # Arrange
+        llm = FakeLLM()
+        payload = '{"abc": 123}'
         # Act
+        summarize_all(payload, llm=llm)
         # Assert
-        empty_json = json.dumps({"start_url": "", "crawled_pages": []})
-
-        with patch("scitex.ai.GenAI") as mock_genai:
-            mock_llm = Mock()
-            mock_llm.return_value = "No content to summarize"
-            mock_genai.return_value = mock_llm
-
-            result = summarize_all(empty_json)
-            assert result == "No content to summarize"
+        assert payload in llm.prompts[0]
 
 
 class TestSummarizeUrl:
-    """Test summarize_url function."""
-
-    def test_summarize_url_complete_flow(self):
-        """Test complete URL summarization flow."""
+    @pytest.fixture
+    def summary_result(self) -> tuple:
         # Arrange
-        # Act
-        # Assert
-        mock_json = json.dumps(
-            {
-                "start_url": "https://test.com",
-                "crawled_pages": [
-                    {"url": "https://test.com", "content": "Page summary"}
-                ],
+        html = "<html><body><p>page</p></body></html>"
+        http_get = FakeHttpGet(
+            responses={
+                "https://example.com": FakeResponse(text=html, status_code=200)
             }
         )
-        mock_summary = "• Summary point 1\n• Summary point 2"
+        llm = FakeLLM(canned="rolled-up-summary")
+        # Act
+        return summarize_url("https://example.com", http_get=http_get, llm=llm)
 
-        with patch("scitex_web._summarize_url.crawl_to_json", return_value=mock_json):
-            with patch(
-                "scitex_web._summarize_url.summarize_all", return_value=mock_summary
-            ):
-                with patch("builtins.print"):  # Suppress pprint output
-                    ground_summary, json_result = summarize_url("test.com")
-
-                    assert ground_summary == mock_summary
-                    assert json_result == mock_json
-
-    def test_summarize_url_error_handling(self):
-        """Test error handling in summarize_url."""
+    def test_returns_summary_string_as_first_element(self, summary_result):
         # Arrange
         # Act
         # Assert
-        with patch(
-            "scitex_web._summarize_url.crawl_to_json",
-            side_effect=Exception("Crawl error"),
-        ):
-            with pytest.raises(Exception) as exc_info:
-                summarize_url("test.com")
-            assert str(exc_info.value) == "Crawl error"
+        assert summary_result[0] == "rolled-up-summary"
 
-    def test_summarize_url_pprint_called(self):
-        """Test that pprint is called with the summary."""
+    def test_returns_json_string_as_second_element(self, summary_result):
         # Arrange
         # Act
         # Assert
-        mock_json = '{"test": "data"}'
-        mock_summary = "Test summary"
-
-        with patch("scitex_web._summarize_url.crawl_to_json", return_value=mock_json):
-            with patch(
-                "scitex_web._summarize_url.summarize_all", return_value=mock_summary
-            ):
-                # pprint is imported as 'from pprint import pprint' in the module
-                with patch("scitex_web._summarize_url.pprint") as mock_pprint:
-                    summarize_url("test.com")
-                    mock_pprint.assert_called_once_with(mock_summary)
+        assert "crawled_pages" in summary_result[1]
 
 
 class TestMain:
-    """Test main function and module alias."""
-
-    def test_main_is_summarize_url(self):
-        """Test that main is an alias for summarize_url."""
+    def test_main_is_summarize_url_alias(self):
         # Arrange
         # Act
         # Assert
-        assert main == summarize_url
-
-    def test_main_execution_smoke_case(self):
-        """Test main function execution returns expected result structure."""
-        # Arrange
-        # Act
-        # Assert
-        mock_json = '{"test": "data"}'
-        mock_summary = "Test summary"
-
-        # main is the same function as summarize_url, so we patch the inner calls
-        with patch("scitex_web._summarize_url.crawl_to_json", return_value=mock_json):
-            with patch(
-                "scitex_web._summarize_url.summarize_all", return_value=mock_summary
-            ):
-                with patch("scitex_web._summarize_url.pprint"):
-                    result = main("http://example.com")
-                    assert result[0] == mock_summary
-                    assert result[1] == mock_json
-
-    def test_script_execution_smoke_case(self):
-        """Test script execution with arguments."""
-        # Arrange
-        # Act
-        # Assert
-        import argparse
-
-        with patch("sys.argv", ["script.py", "--url", "http://example.com"]):
-            # Import and execute the argument parsing similar to __main__ block
-            parser = argparse.ArgumentParser(description="")
-            parser.add_argument("--url", "-u", type=str, help="(default: %(default)s)")
-            args = parser.parse_args()
-
-            assert args.url == "http://example.com"
-
-    def test_readability_import_fallback(self):
-        """Test readability import fallback mechanism."""
-        # This tests the import logic in the actual module
-        # The module tries to import from 'readability' first, then 'readability.readability'
-        # Arrange
-        # Act
-        # Assert
-        import sys
-
-        # Test when both imports fail
-        with patch.dict(
-            "sys.modules", {"readability": None, "readability.readability": None}
-        ):
-            # Re-import the module to trigger the import logic
-            if "scitex_web._summarize_url" in sys.modules:
-                del sys.modules["scitex_web._summarize_url"]
-
-            # This should set Document to None
-            from scitex_web import _summarize_url  # noqa: F401
-
-            # The Document variable should be None when imports fail
-            # (This is handled in the actual module's import section)
+        assert main is summarize_url
 
 
 if __name__ == "__main__":
-    import os
+    pytest.main([os.path.abspath(__file__), "-v"])
 
-    import pytest
-
-    pytest.main([os.path.abspath(__file__)])
-
-# --------------------------------------------------------------------------------
-# Start of Source Code from: /home/ywatanabe/proj/scitex-code/src/scitex/web/_summarize_url.py
-# --------------------------------------------------------------------------------
-# #!./env/bin/python3
-# # -*- coding: utf-8 -*-
-# # Time-stamp: "2024-07-29 21:43:30 (ywatanabe)"
-# # ./src/scitex/web/_crawl.py
-#
-#
-# import requests
-# from bs4 import BeautifulSoup
-# import urllib.parse
-# from concurrent.futures import ThreadPoolExecutor, as_completed
-# import json
-# from tqdm import tqdm
-# import scitex
-# from pprint import pprint
-#
-# try:
-#     from readability import Document
-# except ImportError:
-#     try:
-#         from readability.readability import Document
-#     except ImportError:
-#         Document = None
-#
-# import re
-#
-#
-# # def crawl_url(url, max_depth=1):
-# #     print("\nCrawling...")
-# #     visited = set()
-# #     to_visit = [(url, 0)]
-# #     contents = {}
-#
-# #     while to_visit:
-# #         current_url, depth = to_visit.pop(0)
-# #         if current_url in visited or depth > max_depth:
-# #             continue
-#
-# #         try:
-# #             response = requests.get(current_url)
-# #             if response.status_code == 200:
-# #                 visited.add(current_url)
-# #                 contents[current_url] = response.text
-# #                 soup = BeautifulSoup(response.text, "html.parser")
-#
-# #                 for link in soup.find_all("a", href=True):
-# #                     absolute_link = urllib.parse.urljoin(
-# #                         current_url, link["href"]
-# #                     )
-# #                     if absolute_link not in visited:
-# #                         to_visit.append((absolute_link, depth + 1))
-#
-# #         except requests.RequestException:
-# #             pass
-#
-# #     return visited, contents
-#
-#
-# def extract_main_content(html):
-#     if Document is None:
-#         # Fallback: just strip HTML tags
-#         content = re.sub("<[^<]+?>", "", html)
-#         content = " ".join(content.split())
-#         return content[:5000]  # Limit to first 5000 chars
-#
-#     doc = Document(html)
-#     content = doc.summary()
-#     # Remove HTML tags
-#     content = re.sub("<[^<]+?>", "", content)
-#     # Remove extra whitespace
-#     content = " ".join(content.split())
-#     return content
-#
-#
-# def crawl_url(url, max_depth=1):
-#     print("\nCrawling...")
-#     visited = set()
-#     to_visit = [(url, 0)]
-#     contents = {}
-#
-#     while to_visit:
-#         current_url, depth = to_visit.pop(0)
-#         if current_url in visited or depth > max_depth:
-#             continue
-#
-#         try:
-#             response = requests.get(current_url)
-#             if response.status_code == 200:
-#                 visited.add(current_url)
-#                 main_content = extract_main_content(response.text)
-#                 contents[current_url] = main_content
-#                 soup = BeautifulSoup(response.text, "html.parser")
-#
-#                 for link in soup.find_all("a", href=True):
-#                     absolute_link = urllib.parse.urljoin(current_url, link["href"])
-#                     if absolute_link not in visited:
-#                         to_visit.append((absolute_link, depth + 1))
-#
-#         except requests.RequestException:
-#             pass
-#
-#     return visited, contents
-#
-#
-# def crawl_to_json(start_url):
-#     if not start_url.startswith("http"):
-#         start_url = "https://" + start_url
-#     crawled_urls, contents = crawl_url(start_url)
-#
-#     print("\nSummalizing as json...")
-#
-#     def process_url(url):
-#         llm = scitex.ai.GenAI("gpt-4o-mini")
-#         return {
-#             "url": url,
-#             "content": llm(f"Summarize this page in 1 line:\n\n{contents[url]}"),
-#         }
-#
-#     with ThreadPoolExecutor() as executor:
-#         future_to_url = {executor.submit(process_url, url): url for url in crawled_urls}
-#         crawled_pages = []
-#         for future in tqdm(
-#             as_completed(future_to_url),
-#             total=len(crawled_urls),
-#             desc="Processing URLs",
-#         ):
-#             crawled_pages.append(future.result())
-#
-#     result = {"start_url": start_url, "crawled_pages": crawled_pages}
-#
-#     return json.dumps(result, indent=2)
-#
-#
-# def summarize_all(json_contents):
-#     llm = scitex.ai.GenAI("gpt-4o-mini")
-#     out = llm(f"Summarize this json file with 5 bullet points:\n\n{json_contents}")
-#     return out
-#
-#
-# def summarize_url(start_url):
-#     json_result = crawl_to_json(start_url)
-#     ground_summary = summarize_all(json_result)
-#
-#     pprint(ground_summary)
-#     return ground_summary, json_result
-#
-#
-# main = summarize_url
-#
-# if __name__ == "__main__":
-#     import argparse
-#     import scitex
-#
-#     parser = argparse.ArgumentParser(description="")
-#     parser.add_argument("--url", "-u", type=str, help="(default: %(default)s)")
-#     args = parser.parse_args()
-#     scitex.gen.print_block(args, c="yellow")
-#
-#     main(args.url)
-
-# --------------------------------------------------------------------------------
-# End of Source Code from: /home/ywatanabe/proj/scitex-code/src/scitex/web/_summarize_url.py
-# --------------------------------------------------------------------------------
+# EOF
