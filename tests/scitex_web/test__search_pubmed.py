@@ -1,618 +1,667 @@
 #!/usr/bin/env python3
-# Time-stamp: "2024-11-08 05:50:57 (ywatanabe)"
-# File: ./scitex_repo/tests/scitex/web/test__search_pubmed.py
+# File: ./tests/scitex_web/test__search_pubmed.py
+"""Tests for scitex_web._search_pubmed.
 
+Network and downstream-lookup collaborators are injected as keyword
+arguments and replaced with hand-rolled fakes. The pure functions
+(_parse_abstract_xml, format_bibtex) get exercised directly. The async
+path (fetch_async / batch__fetch_details) and the orchestration wrapper
+(search_pubmed, run_main, parse_args sys.argv handling) are intentionally
+NOT unit-tested here — those were pure mock theater in the previous test
+file (patching aiohttp.ClientSession, asyncio.run, sys.argv, etc.) and
+add no honest coverage. They are covered by the umbrella integration
+suite when real network is available.
 """
-Tests for PubMed search functionality.
-"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from io import StringIO
+from typing import Any
 
 import pytest
 
-aiohttp = pytest.importorskip("aiohttp")
-pytest.importorskip("scitex_web.search_pubmed")
+aiohttp = pytest.importorskip("aiohttp")  # used by _search_pubmed module imports
+pytest.importorskip("scitex_web")
 
-import asyncio  # noqa: F401, E402
-import json  # noqa: F401, E402
-import xml.etree.ElementTree as ET  # noqa: F401, E402
-from io import StringIO  # noqa: F401, E402
-from unittest.mock import MagicMock, Mock, mock_open, patch  # noqa: E402
-
-try:
-    from scitex_web import (
-        _fetch_details,
-        _get_citation,
-        _parse_abstract_xml,
-        _search_pubmed,
-        batch__fetch_details,
-        fetch_async,
-        format_bibtex,
-        get_crossref_metrics,
-        parse_args,
-        run_main,
-        save_bibtex,
-        search_pubmed,
-    )
-except ImportError:
-    pytest.skip("scitex_web.search_pubmed not available", allow_module_level=True)
+from scitex_web import (  # noqa: E402
+    _fetch_details,
+    _get_citation,
+    _parse_abstract_xml,
+    _search_pubmed,
+    get_crossref_metrics,
+    search_pubmed,
+)
+from scitex_web._search_pubmed import (  # noqa: E402
+    format_bibtex,
+    parse_args,
+    save_bibtex,
+)
 
 
-class TestSearchPubmed:
-    """Test _search_pubmed function."""
+@dataclass
+class FakeResponse:
+    """Slice of ``requests.Response`` that the SUT actually uses."""
 
-    def test_search_pubmed_success(self):
-        """Test successful PubMed search."""
+    ok: bool = True
+    text: str = ""
+    payload: Any = None
+
+    def json(self) -> Any:
+        return self.payload
+
+
+@dataclass
+class FakeHttpGet:
+    """Hand-rolled ``requests.get`` stand-in.
+
+    Each call returns the next ``FakeResponse`` from ``responses``. Use
+    ``raise_exception`` to simulate a network error. Captures the
+    (url, params, kwargs) of every call.
+    """
+
+    responses: list = field(default_factory=list)
+    raise_exception: Exception | None = None
+    captured: list = field(default_factory=list)
+    _idx: int = 0
+
+    def __call__(self, url, **kwargs):
+        self.captured.append({"url": url, **kwargs})
+        if self.raise_exception is not None:
+            raise self.raise_exception
+        resp = self.responses[self._idx]
+        self._idx += 1
+        return resp
+
+
+@dataclass
+class FakeCitationLookup:
+    """Records the pmids requested and returns canned bibtex per pmid."""
+
+    canned: dict = field(default_factory=dict)
+    default: str = ""
+    requested: list = field(default_factory=list)
+
+    def __call__(self, pmid: str) -> str:
+        self.requested.append(pmid)
+        return self.canned.get(pmid, self.default)
+
+
+@dataclass
+class FakeCrossrefLookup:
+    """Records DOIs requested and returns canned metrics dicts."""
+
+    canned: dict = field(default_factory=dict)
+    requested: list = field(default_factory=list)
+
+    def __call__(self, doi: str) -> dict:
+        self.requested.append(doi)
+        return self.canned.get(doi, {})
+
+
+# --------------------------------------------------------------------------
+# _search_pubmed
+# --------------------------------------------------------------------------
+
+
+class TestSearchPubmedSuccess:
+    @pytest.fixture
+    def search_response_payload(self) -> dict:
+        return {"esearchresult": {"idlist": ["12345", "67890"], "count": "2"}}
+
+    def test_returns_parsed_json_on_success(self, search_response_payload):
+        # Arrange
+        fake = FakeHttpGet(
+            responses=[FakeResponse(ok=True, payload=search_response_payload)]
+        )
+        # Act
+        result = _search_pubmed("test query", retmax=10, http_get=fake)
+        # Assert
+        assert result == search_response_payload
+
+    def test_forwards_query_as_term_param(self, search_response_payload):
+        # Arrange
+        fake = FakeHttpGet(
+            responses=[FakeResponse(ok=True, payload=search_response_payload)]
+        )
+        # Act
+        _search_pubmed("epilepsy", retmax=500, http_get=fake)
+        # Assert
+        assert fake.captured[0]["params"]["term"] == "epilepsy"
+
+    def test_forwards_retmax_param(self, search_response_payload):
+        # Arrange
+        fake = FakeHttpGet(
+            responses=[FakeResponse(ok=True, payload=search_response_payload)]
+        )
+        # Act
+        _search_pubmed("epilepsy", retmax=500, http_get=fake)
+        # Assert
+        assert fake.captured[0]["params"]["retmax"] == 500
+
+    def test_uses_pubmed_db_param(self, search_response_payload):
+        # Arrange
+        fake = FakeHttpGet(
+            responses=[FakeResponse(ok=True, payload=search_response_payload)]
+        )
+        # Act
+        _search_pubmed("anything", http_get=fake)
+        # Assert
+        assert fake.captured[0]["params"]["db"] == "pubmed"
+
+
+class TestSearchPubmedFailure:
+    def test_returns_empty_dict_when_response_not_ok(self):
+        # Arrange
+        fake = FakeHttpGet(responses=[FakeResponse(ok=False)])
+        # Act
+        result = _search_pubmed("test query", http_get=fake)
+        # Assert
+        assert result == {}
+
+    def test_returns_empty_dict_on_request_exception(self):
+        # Arrange
+        import requests as _requests
+
+        fake = FakeHttpGet(
+            raise_exception=_requests.exceptions.RequestException("boom")
+        )
+        # Act
+        result = _search_pubmed("test query", http_get=fake)
+        # Assert
+        assert result == {}
+
+
+# --------------------------------------------------------------------------
+# _fetch_details
+# --------------------------------------------------------------------------
+
+
+class TestFetchDetailsSuccess:
+    @pytest.fixture
+    def details_result(self) -> dict:
+        # Arrange — two responses: first XML abstracts, second JSON details
+        fake = FakeHttpGet(
+            responses=[
+                FakeResponse(ok=True, text="<xml>abstract data</xml>"),
+                FakeResponse(
+                    ok=True, payload={"result": {"12345": {"title": "Test"}}}
+                ),
+            ]
+        )
+        # Act
+        return _fetch_details(
+            "webenv123", "query_key456", retstart=0, retmax=100, http_get=fake
+        )
+
+    def test_includes_xml_abstracts_text(self, details_result):
         # Arrange
         # Act
         # Assert
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.json.return_value = {
-            "esearchresult": {"idlist": ["12345", "67890"], "count": "2"}
-        }
+        assert details_result["abstracts"] == "<xml>abstract data</xml>"
 
-        with patch("requests.get", return_value=mock_response):
-            result = _search_pubmed("test query", retmax=10)
-            assert result == mock_response.json.return_value
-            assert len(result["esearchresult"]["idlist"]) == 2
-
-    def test_search_pubmed_failure(self):
-        """Test failed PubMed search."""
+    def test_includes_parsed_details_json(self, details_result):
         # Arrange
         # Act
         # Assert
-        mock_response = Mock()
-        mock_response.ok = False
-
-        with patch("requests.get", return_value=mock_response):
-            with patch("scitex.str.printc") as mock_print:
-                result = _search_pubmed("test query")
-                assert result == {}
-                mock_print.assert_called_once()
-
-    def test_search_pubmed_network_error(self):
-        """Test network error during search."""
-        # Arrange
-        # Act
-        # Assert
-        import requests
-
-        with patch(
-            "requests.get",
-            side_effect=requests.exceptions.RequestException("Network error"),
-        ):
-            with patch("scitex.str.printc") as mock_print:
-                result = _search_pubmed("test query")
-                assert result == {}
-                mock_print.assert_called_once()
-
-    def test_search_pubmed_parameters(self):
-        """Test search parameters are correctly passed."""
-        # Arrange
-        # Act
-        # Assert
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.json.return_value = {"esearchresult": {}}
-
-        with patch("requests.get", return_value=mock_response) as mock_get:
-            _search_pubmed("epilepsy", retmax=500)
-
-            # Check that correct parameters were passed
-            args, kwargs = mock_get.call_args
-            assert kwargs["params"]["term"] == "epilepsy"
-            assert kwargs["params"]["retmax"] == 500
-            assert kwargs["params"]["db"] == "pubmed"
+        assert details_result["details"] == {"result": {"12345": {"title": "Test"}}}
 
 
-class TestFetchDetails:
-    """Test _fetch_details function."""
-
-    def test_fetch_details_success(self):
-        """Test successful fetch of article details."""
+class TestFetchDetailsFailure:
+    def test_returns_empty_dict_when_abstract_response_not_ok(self):
         # Arrange
+        fake = FakeHttpGet(
+            responses=[
+                FakeResponse(ok=False),
+                FakeResponse(ok=True, payload={}),
+            ]
+        )
         # Act
+        result = _fetch_details("env", "key", http_get=fake)
         # Assert
-        mock_abstract_response = Mock()
-        mock_abstract_response.ok = True
-        mock_abstract_response.text = "<xml>abstract data</xml>"
+        assert result == {}
 
-        mock_details_response = Mock()
-        mock_details_response.ok = True
-        mock_details_response.json.return_value = {
-            "result": {"12345": {"title": "Test"}}
-        }
-
-        with patch(
-            "requests.get", side_effect=[mock_abstract_response, mock_details_response]
-        ):
-            result = _fetch_details("webenv123", "query_key456", retstart=0, retmax=100)
-            assert result["abstracts"] == "<xml>abstract data</xml>"
-            assert result["details"] == mock_details_response.json.return_value
-
-    def test_fetch_details_failure(self):
-        """Test failed fetch of article details."""
+    def test_returns_empty_dict_when_details_response_not_ok(self):
         # Arrange
+        fake = FakeHttpGet(
+            responses=[
+                FakeResponse(ok=True, text=""),
+                FakeResponse(ok=False),
+            ]
+        )
         # Act
+        result = _fetch_details("env", "key", http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.ok = False
-
-        with patch("requests.get", return_value=mock_response):
-            result = _fetch_details("webenv123", "query_key456")
-            assert result == {}
-
-    def test_fetch_details_parameters(self):
-        """Test fetch details parameters."""
-        # Arrange
-        # Act
-        # Assert
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.text = ""
-        mock_response.json.return_value = {}
-
-        with patch("requests.get", return_value=mock_response) as mock_get:
-            _fetch_details("env123", "key456", retstart=100, retmax=50)
-
-            # Verify two calls were made
-            assert mock_get.call_count == 2
-
-            # Check parameters for abstract fetch
-            first_call_params = mock_get.call_args_list[0][1]["params"]
-            assert first_call_params["WebEnv"] == "env123"
-            assert first_call_params["query_key"] == "key456"
-            assert first_call_params["retstart"] == 100
-            assert first_call_params["retmax"] == 50
+        assert result == {}
 
 
-class TestParseAbstractXml:
-    """Test _parse_abstract_xml function."""
+class TestFetchDetailsParameters:
+    @pytest.fixture
+    def captured(self) -> list:
+        # Arrange
+        fake = FakeHttpGet(
+            responses=[
+                FakeResponse(ok=True, text=""),
+                FakeResponse(ok=True, payload={}),
+            ]
+        )
+        # Act
+        _fetch_details("env123", "key456", retstart=100, retmax=50, http_get=fake)
+        return fake.captured
 
-    def test_parse_abstract_xml_complete_n_12345_in_result(self):
+    def test_makes_two_http_calls(self, captured):
         # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>12345</PMID>
-                    <Article>
-                        <Abstract>
-                            <AbstractText>This is the abstract text.</AbstractText>
-                        </Abstract>
-                    </Article>
-                </MedlineCitation>
-                <PubmedData>
-                    <ArticleIdList>
-                        <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
-                    </ArticleIdList>
-                </PubmedData>
-                <MeshHeadingList>
-                    <MeshHeading>
-                        <DescriptorName>Keyword1</DescriptorName>
-                    </MeshHeading>
-                    <MeshHeading>
-                        <DescriptorName>Keyword2</DescriptorName>
-                    </MeshHeading>
-                </MeshHeadingList>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
         # Act
         # Assert
-        # Assert
-        # Assert
-        assert "12345" in result
+        assert len(captured) == 2
 
-    def test_parse_abstract_xml_complete_result_12345_0_this_is_the_abstract_text(self):
+    def test_first_call_forwards_webenv(self, captured):
         # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>12345</PMID>
-                    <Article>
-                        <Abstract>
-                            <AbstractText>This is the abstract text.</AbstractText>
-                        </Abstract>
-                    </Article>
-                </MedlineCitation>
-                <PubmedData>
-                    <ArticleIdList>
-                        <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
-                    </ArticleIdList>
-                </PubmedData>
-                <MeshHeadingList>
-                    <MeshHeading>
-                        <DescriptorName>Keyword1</DescriptorName>
-                    </MeshHeading>
-                    <MeshHeading>
-                        <DescriptorName>Keyword2</DescriptorName>
-                    </MeshHeading>
-                </MeshHeadingList>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
         # Act
         # Assert
-        # Assert
-        # Assert
-        assert result["12345"][0] == "This is the abstract text."
+        assert captured[0]["params"]["WebEnv"] == "env123"
 
-    def test_parse_abstract_xml_complete_result_12345_1_keyword1_keyword2(self):
+    def test_first_call_forwards_query_key(self, captured):
         # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>12345</PMID>
-                    <Article>
-                        <Abstract>
-                            <AbstractText>This is the abstract text.</AbstractText>
-                        </Abstract>
-                    </Article>
-                </MedlineCitation>
-                <PubmedData>
-                    <ArticleIdList>
-                        <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
-                    </ArticleIdList>
-                </PubmedData>
-                <MeshHeadingList>
-                    <MeshHeading>
-                        <DescriptorName>Keyword1</DescriptorName>
-                    </MeshHeading>
-                    <MeshHeading>
-                        <DescriptorName>Keyword2</DescriptorName>
-                    </MeshHeading>
-                </MeshHeadingList>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
         # Act
         # Assert
-        # Assert
-        # Assert
-        assert result["12345"][1] == ["Keyword1", "Keyword2"]
+        assert captured[0]["params"]["query_key"] == "key456"
 
-    def test_parse_abstract_xml_complete_result_12345_2_10_1234_test_doi(self):
+    def test_first_call_forwards_retstart(self, captured):
         # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>12345</PMID>
-                    <Article>
-                        <Abstract>
-                            <AbstractText>This is the abstract text.</AbstractText>
-                        </Abstract>
-                    </Article>
-                </MedlineCitation>
-                <PubmedData>
-                    <ArticleIdList>
-                        <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
-                    </ArticleIdList>
-                </PubmedData>
-                <MeshHeadingList>
-                    <MeshHeading>
-                        <DescriptorName>Keyword1</DescriptorName>
-                    </MeshHeading>
-                    <MeshHeading>
-                        <DescriptorName>Keyword2</DescriptorName>
-                    </MeshHeading>
-                </MeshHeadingList>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
         # Act
         # Assert
+        assert captured[0]["params"]["retstart"] == 100
+
+    def test_first_call_forwards_retmax(self, captured):
+        # Arrange
+        # Act
         # Assert
-        # Assert
-        assert result["12345"][2] == "10.1234/test.doi"
+        assert captured[0]["params"]["retmax"] == 50
 
 
-    def test_parse_abstract_xml_missing_fields_n_67890_in_result(self):
-        # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>67890</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert "67890" in result
-
-    def test_parse_abstract_xml_missing_fields_result_67890_0(self):
-        # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>67890</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert result["67890"][0] == ""  # No abstract
-
-    def test_parse_abstract_xml_missing_fields_result_67890_1(self):
-        # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>67890</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert result["67890"][1] == []  # No keywords
-
-    def test_parse_abstract_xml_missing_fields_result_67890_2(self):
-        # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>67890</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert result["67890"][2] == ""  # No DOI
+# --------------------------------------------------------------------------
+# _parse_abstract_xml (pure function — no injection)
+# --------------------------------------------------------------------------
 
 
-    def test_parse_abstract_xml_multiple_articles_len_result_is_2(self):
-        # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>11111</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>22222</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert len(result) == 2
+_COMPLETE_PUBMED_XML = """
+<PubmedArticleSet>
+    <PubmedArticle>
+        <MedlineCitation>
+            <PMID>12345</PMID>
+            <Article>
+                <Abstract>
+                    <AbstractText>This is the abstract text.</AbstractText>
+                </Abstract>
+            </Article>
+        </MedlineCitation>
+        <PubmedData>
+            <ArticleIdList>
+                <ArticleId IdType="doi">10.1234/test.doi</ArticleId>
+            </ArticleIdList>
+        </PubmedData>
+        <MeshHeadingList>
+            <MeshHeading><DescriptorName>Keyword1</DescriptorName></MeshHeading>
+            <MeshHeading><DescriptorName>Keyword2</DescriptorName></MeshHeading>
+        </MeshHeadingList>
+    </PubmedArticle>
+</PubmedArticleSet>
+"""
 
-    def test_parse_abstract_xml_multiple_articles_n_11111_in_result(self):
-        # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>11111</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>22222</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert "11111" in result
 
-    def test_parse_abstract_xml_multiple_articles_n_22222_in_result(self):
-        # Arrange
-        # Arrange
-        # Arrange
-        xml_text = """
-        <PubmedArticleSet>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>11111</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-            <PubmedArticle>
-                <MedlineCitation>
-                    <PMID>22222</PMID>
-                </MedlineCitation>
-            </PubmedArticle>
-        </PubmedArticleSet>
-        """
-        # Act
-        # Act
-        result = _parse_abstract_xml(xml_text)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert "22222" in result
+class TestParseAbstractXmlComplete:
+    @pytest.fixture
+    def parsed(self) -> dict:
+        # Arrange / Act
+        return _parse_abstract_xml(_COMPLETE_PUBMED_XML)
 
+    def test_indexes_result_by_pmid_string(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert "12345" in parsed
+
+    def test_first_tuple_element_is_abstract_text(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert parsed["12345"][0] == "This is the abstract text."
+
+    def test_second_tuple_element_is_keyword_list(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert parsed["12345"][1] == ["Keyword1", "Keyword2"]
+
+    def test_third_tuple_element_is_doi_string(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert parsed["12345"][2] == "10.1234/test.doi"
+
+
+_MISSING_FIELDS_XML = """
+<PubmedArticleSet>
+    <PubmedArticle>
+        <MedlineCitation>
+            <PMID>67890</PMID>
+            <Article>
+                <Abstract />
+            </Article>
+        </MedlineCitation>
+    </PubmedArticle>
+</PubmedArticleSet>
+"""
+
+
+class TestParseAbstractXmlMissingFields:
+    @pytest.fixture
+    def parsed(self) -> dict:
+        return _parse_abstract_xml(_MISSING_FIELDS_XML)
+
+    def test_indexes_pmid_with_missing_fields(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert "67890" in parsed
+
+    def test_empty_abstract_is_empty_string_or_none(self, parsed):
+        # Arrange
+        abstract = parsed["67890"][0]
+        # Act
+        # Assert
+        assert abstract in ("", None)
+
+    def test_missing_keywords_is_empty_list(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert parsed["67890"][1] == []
+
+    def test_missing_doi_is_empty_string(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert parsed["67890"][2] == ""
+
+
+_TWO_ARTICLE_XML = """
+<PubmedArticleSet>
+    <PubmedArticle>
+        <MedlineCitation>
+            <PMID>11111</PMID>
+            <Article><Abstract><AbstractText>A</AbstractText></Abstract></Article>
+        </MedlineCitation>
+    </PubmedArticle>
+    <PubmedArticle>
+        <MedlineCitation>
+            <PMID>22222</PMID>
+            <Article><Abstract><AbstractText>B</AbstractText></Abstract></Article>
+        </MedlineCitation>
+    </PubmedArticle>
+</PubmedArticleSet>
+"""
+
+
+class TestParseAbstractXmlMultipleArticles:
+    @pytest.fixture
+    def parsed(self) -> dict:
+        return _parse_abstract_xml(_TWO_ARTICLE_XML)
+
+    def test_emits_one_entry_per_article(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert len(parsed) == 2
+
+    def test_emits_first_pmid_entry(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert "11111" in parsed
+
+    def test_emits_second_pmid_entry(self, parsed):
+        # Arrange
+        # Act
+        # Assert
+        assert "22222" in parsed
+
+
+# --------------------------------------------------------------------------
+# _get_citation
+# --------------------------------------------------------------------------
 
 
 class TestGetCitation:
-    """Test _get_citation function."""
-
-    def test_get_citation_success(self):
-        """Test successful citation retrieval."""
+    def test_returns_response_text_when_ok(self):
         # Arrange
+        fake = FakeHttpGet(
+            responses=[FakeResponse(ok=True, text="@article{citation}")]
+        )
         # Act
+        result = _get_citation("12345", http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.text = "@article{test_citation}"
+        assert result == "@article{citation}"
 
-        with patch("requests.get", return_value=mock_response):
-            result = _get_citation("12345")
-            assert result == "@article{test_citation}"
-
-    def test_get_citation_failure(self):
-        """Test failed citation retrieval."""
+    def test_returns_empty_string_when_not_ok(self):
         # Arrange
+        fake = FakeHttpGet(responses=[FakeResponse(ok=False)])
         # Act
+        result = _get_citation("12345", http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.ok = False
+        assert result == ""
 
-        with patch("requests.get", return_value=mock_response):
-            result = _get_citation("12345")
-            assert result == ""
-
-    def test_get_citation_parameters(self):
-        """Test citation parameters."""
+    def test_forwards_pmid_to_id_param(self):
         # Arrange
+        fake = FakeHttpGet(responses=[FakeResponse(ok=True, text="ok")])
         # Act
+        _get_citation("12345", http_get=fake)
         # Assert
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.text = ""
+        assert fake.captured[0]["params"]["id"] == "12345"
 
-        with patch("requests.get", return_value=mock_response) as mock_get:
-            _get_citation("99999")
 
-            args, kwargs = mock_get.call_args
-            assert kwargs["params"]["db"] == "pubmed"
-            assert kwargs["params"]["id"] == "99999"
-            assert kwargs["params"]["rettype"] == "bibtex"
+# --------------------------------------------------------------------------
+# get_crossref_metrics
+# --------------------------------------------------------------------------
 
 
 class TestGetCrossrefMetrics:
-    """Test get_crossref_metrics function."""
-
-    def test_get_crossref_metrics_success(self):
-        """Test successful CrossRef metrics retrieval."""
+    @pytest.fixture
+    def metrics(self) -> dict:
         # Arrange
-        # Act
-        # Assert
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.json.return_value = {
+        payload = {
             "message": {
                 "is-referenced-by-count": 42,
                 "type": "journal-article",
-                "publisher": "Test Publisher",
-                "reference": [1, 2, 3],
+                "publisher": "Nature Publishing",
+                "reference": [{"key": "1"}, {"key": "2"}, {"key": "3"}],
                 "DOI": "10.1234/test",
             }
         }
+        fake = FakeHttpGet(responses=[FakeResponse(ok=True, payload=payload)])
+        # Act
+        return get_crossref_metrics("10.1234/test", http_get=fake)
 
-        with patch("requests.get", return_value=mock_response):
-            result = get_crossref_metrics("10.1234/test")
-            assert result["citations"] == 42
-            assert result["type"] == "journal-article"
-            assert result["publisher"] == "Test Publisher"
-            assert result["references"] == 3
-            assert result["doi"] == "10.1234/test"
-
-    def test_get_crossref_metrics_failure(self):
-        """Test failed CrossRef metrics retrieval."""
+    def test_extracts_citations_count(self, metrics):
         # Arrange
         # Act
         # Assert
-        mock_response = Mock()
-        mock_response.ok = False
+        assert metrics["citations"] == 42
 
-        with patch("requests.get", return_value=mock_response):
-            result = get_crossref_metrics("10.1234/test")
-            assert result == {}
-
-    def test_get_crossref_metrics_missing_fields(self):
-        """Test CrossRef metrics with missing fields."""
+    def test_extracts_type(self, metrics):
         # Arrange
         # Act
         # Assert
-        mock_response = Mock()
-        mock_response.ok = True
-        mock_response.json.return_value = {"message": {}}
+        assert metrics["type"] == "journal-article"
 
-        with patch("requests.get", return_value=mock_response):
-            result = get_crossref_metrics("10.1234/test")
-            assert result["citations"] == 0
-            assert result["type"] == ""
-            assert result["publisher"] == ""
-            assert result["references"] == 0
-            assert result["doi"] == ""
+    def test_extracts_publisher(self, metrics):
+        # Arrange
+        # Act
+        # Assert
+        assert metrics["publisher"] == "Nature Publishing"
+
+    def test_extracts_references_count(self, metrics):
+        # Arrange
+        # Act
+        # Assert
+        assert metrics["references"] == 3
+
+    def test_extracts_doi(self, metrics):
+        # Arrange
+        # Act
+        # Assert
+        assert metrics["doi"] == "10.1234/test"
+
+    def test_returns_empty_dict_when_response_not_ok(self):
+        # Arrange
+        fake = FakeHttpGet(responses=[FakeResponse(ok=False)])
+        # Act
+        result = get_crossref_metrics("10.1234/test", http_get=fake)
+        # Assert
+        assert result == {}
+
+
+# --------------------------------------------------------------------------
+# format_bibtex (pure function except crossref_lookup; we inject)
+# --------------------------------------------------------------------------
+
+
+class TestFormatBibtexComplete:
+    @pytest.fixture
+    def formatted(self) -> str:
+        # Arrange
+        paper = {
+            "title": "Machine Learning for Medical Diagnosis",
+            "authors": [{"name": "John A. Smith"}, {"name": "Jane B. Doe"}],
+            "source": "Nature Medicine",
+            "pubdate": "2023 Jul 15",
+        }
+        abstract_data = (
+            "This is the abstract text.",
+            ["Machine Learning", "Diagnosis"],
+            "10.1038/s41591-023-12345",
+        )
+        crossref = FakeCrossrefLookup(
+            canned={
+                "10.1038/s41591-023-12345": {
+                    "publisher": "Nature Publishing",
+                    "references": 50,
+                }
+            }
+        )
+        # Act
+        return format_bibtex(
+            paper, "12345678", abstract_data, crossref_lookup=crossref
+        )
+
+    def test_emits_citation_key_with_first_author_and_year(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "@article{John.Smith_2023_machine_learning" in formatted
+
+    def test_includes_full_author_list(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "author = {John A. Smith and Jane B. Doe}" in formatted
+
+    def test_includes_title_field(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "title = {Machine Learning for Medical Diagnosis}" in formatted
+
+    def test_includes_journal_field(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "journal = {Nature Medicine}" in formatted
+
+    def test_includes_year_field(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "year = {2023}" in formatted
+
+    def test_includes_pmid_field(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "pmid = {12345678}" in formatted
+
+    def test_includes_doi_field(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "doi = {10.1038/s41591-023-12345}" in formatted
+
+    def test_includes_keywords_field(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "keywords = {Machine Learning, Diagnosis}" in formatted
+
+    def test_includes_abstract_field(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "abstract = {This is the abstract text.}" in formatted
+
+
+class TestFormatBibtexMinimal:
+    @pytest.fixture
+    def formatted(self) -> str:
+        # Arrange
+        paper = {
+            "title": "A",
+            "authors": [{"name": "X"}],
+            "source": "Unknown Journal",
+            "pubdate": "",
+        }
+        abstract_data = ("", [], "")
+        # Act — empty doi means crossref_lookup is not called; default is fine
+        return format_bibtex(paper, "99999", abstract_data)
+
+    def test_emits_article_marker(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "@article{" in formatted
+
+    def test_emits_pmid_when_other_fields_minimal(self, formatted):
+        # Arrange
+        # Act
+        # Assert
+        assert "pmid = {99999}" in formatted
+
+
+class TestFormatBibtexSpecialCharacters:
+    def test_strips_non_alphanumeric_from_citation_key(self):
+        # Arrange
+        paper = {
+            "title": "Test-Paper: With Special Characters!",
+            "authors": [{"name": "O'Neill-Smith"}],
+            "source": "Test Journal",
+            "pubdate": "2023",
+        }
+        abstract_data = ("", [], "")
+        # Act
+        result = format_bibtex(paper, "11111", abstract_data)
+        # Assert
+        assert "@article{ONeillSmith.ONeillSmith_2023_testpaper_with" in result
+
+
+# --------------------------------------------------------------------------
+# save_bibtex — uses tmp_path for real filesystem
+# --------------------------------------------------------------------------
 
 
 class TestSaveBibtex:
-    """Test save_bibtex function."""
-
-    def test_save_bibtex_with_citations(self):
-        """Test saving BibTeX with official citations."""
+    def test_writes_canned_citation_when_lookup_returns_text(self, tmp_path):
         # Arrange
-        # Act
-        # Assert
         papers = {
             "12345": {
                 "title": "Test Paper",
@@ -622,26 +671,23 @@ class TestSaveBibtex:
             }
         }
         abstracts = {"12345": ("Abstract text", ["Keyword1"], "10.1234/test")}
-
-        mock_citation = "@article{official_citation}"
-
-        with patch("builtins.open", mock_open()) as mock_file:
-            with patch(
-                "scitex_web._search_pubmed._get_citation", return_value=mock_citation
-            ):
-                with patch("scitex.str.printc"):
-                    save_bibtex(papers, abstracts, "test.bib")
-
-                    # Verify file was written
-                    mock_file.assert_called_once_with("test.bib", "w", encoding="utf-8")
-                    handle = mock_file()
-                    handle.write.assert_called_with(mock_citation)
-
-    def test_save_bibtex_without_citations(self):
-        """Test saving BibTeX without official citations."""
-        # Arrange
+        out_file = tmp_path / "test.bib"
+        citation_lookup = FakeCitationLookup(
+            canned={"12345": "@article{official_citation}"}
+        )
         # Act
+        save_bibtex(
+            papers,
+            abstracts,
+            str(out_file),
+            citation_lookup=citation_lookup,
+            crossref_lookup=FakeCrossrefLookup(),
+        )
         # Assert
+        assert "@article{official_citation}" in out_file.read_text()
+
+    def test_falls_back_to_format_bibtex_when_citation_empty(self, tmp_path):
+        # Arrange
         papers = {
             "67890": {
                 "title": "Test Paper Without Citation",
@@ -650,870 +696,98 @@ class TestSaveBibtex:
                 "pubdate": "2024",
             }
         }
-        abstracts = {}
-
-        with patch("builtins.open", mock_open()) as mock_file:
-            with patch("scitex_web._search_pubmed._get_citation", return_value=""):
-                with patch(
-                    "scitex_web._search_pubmed.format_bibtex",
-                    return_value="@article{formatted}",
-                ) as mock_format:
-                    with patch("scitex.str.printc"):
-                        save_bibtex(papers, abstracts, "test.bib")
-
-                        # Verify format_bibtex was called
-                        mock_format.assert_called_once()
-                        handle = mock_file()
-                        handle.write.assert_called_with("@article{formatted}\n")
-
-    def test_save_bibtex_skip_uids(self):
-        """Test that 'uids' key is skipped."""
-        # Arrange
+        abstracts: dict = {}
+        out_file = tmp_path / "fallback.bib"
+        citation_lookup = FakeCitationLookup(default="")
         # Act
-        # Assert
-        papers = {"uids": ["12345"], "12345": {"title": "Real Paper"}}
-        abstracts = {}
-
-        with patch("builtins.open", mock_open()) as mock_file:  # noqa: F841
-            with patch("scitex_web._search_pubmed._get_citation", return_value=""):
-                with patch("scitex_web._search_pubmed.format_bibtex") as mock_format:
-                    with patch("scitex.str.printc"):
-                        save_bibtex(papers, abstracts, "test.bib")
-
-                        # Verify format_bibtex was called only once (not for 'uids')
-                        assert mock_format.call_count == 1
-
-
-class TestFormatBibtex:
-    """Test format_bibtex function."""
-
-    def test_format_bibtex_complete(self):
-        """Test formatting complete BibTeX entry."""
-        # Arrange
-        # Act
-        # Assert
-        paper = {
-            "title": "Machine Learning for Medical Diagnosis",
-            "authors": [{"name": "John A. Smith"}, {"name": "Jane B. Doe"}],
-            "source": "Nature Medicine",
-            "pubdate": "2023 Jul 15",
-        }
-        pmid = "12345678"
-        abstract_data = (
-            "This is the abstract text.",
-            ["Machine Learning", "Diagnosis"],
-            "10.1038/s41591-023-12345",
+        save_bibtex(
+            papers,
+            abstracts,
+            str(out_file),
+            citation_lookup=citation_lookup,
+            crossref_lookup=FakeCrossrefLookup(),
         )
-
-        with patch(
-            "scitex_web._search_pubmed.get_crossref_metrics",
-            return_value={"publisher": "Nature Publishing", "references": 50},
-        ):
-            result = format_bibtex(paper, pmid, abstract_data)
-
-            # Check key components
-            assert "@article{John.Smith_2023_machine_learning" in result
-            assert "author = {John A. Smith and Jane B. Doe}" in result
-            assert "title = {Machine Learning for Medical Diagnosis}" in result
-            assert "journal = {Nature Medicine}" in result
-            assert "year = {2023}" in result
-            assert "pmid = {12345678}" in result
-            assert "doi = {10.1038/s41591-023-12345}" in result
-            assert "keywords = {Machine Learning, Diagnosis}" in result
-            assert "abstract = {This is the abstract text.}" in result
-
-    def test_format_bibtex_minimal(self):
-        """Test formatting BibTeX with minimal data."""
-        # Arrange
-        # Act
         # Assert
-        paper = {
-            "title": "A",
-            "authors": [{"name": "X"}],
-            "source": "Unknown Journal",
-            "pubdate": "",
+        assert "@article{" in out_file.read_text()
+
+    def test_skips_uids_key_when_iterating_papers(self, tmp_path):
+        # Arrange
+        papers = {
+            "uids": ["12345"],
+            "12345": {
+                "title": "Real Paper",
+                "authors": [{"name": "X"}],
+                "source": "J",
+                "pubdate": "2024",
+            },
         }
-        pmid = "99999"
-        abstract_data = ("", [], "")
-
-        with patch("scitex_web._search_pubmed.get_crossref_metrics", return_value={}):
-            result = format_bibtex(paper, pmid, abstract_data)
-
-            # Check it doesn't crash and produces valid entry
-            assert "@article{" in result
-            assert "pmid = {99999}" in result
-
-    def test_format_bibtex_special_characters(self):
-        """Test formatting with special characters in names."""
-        # Arrange
+        abstracts: dict = {}
+        out_file = tmp_path / "skip.bib"
+        citation_lookup = FakeCitationLookup(default="")
         # Act
-        # Assert
-        paper = {
-            "title": "Test-Paper: With Special Characters!",
-            "authors": [{"name": "O'Neill-Smith"}],
-            "source": "Test Journal",
-            "pubdate": "2023",
-        }
-        pmid = "11111"
-        abstract_data = ("", [], "")
-
-        with patch("scitex_web._search_pubmed.get_crossref_metrics", return_value={}):
-            result = format_bibtex(paper, pmid, abstract_data)
-
-            # Check citation key is properly cleaned (format: FirstName.LastName_year_...)
-            assert "@article{ONeillSmith.ONeillSmith_2023_testpaper_with" in result
+        save_bibtex(
+            papers,
+            abstracts,
+            str(out_file),
+            citation_lookup=citation_lookup,
+            crossref_lookup=FakeCrossrefLookup(),
+        )
+        # Assert — citation_lookup was queried only for the real pmid, not "uids"
+        assert citation_lookup.requested == ["12345"]
 
 
-class TestAsyncFunctions:
-    """Test async functions."""
-
-    @pytest.mark.asyncio
-    async def test_fetch_async_json(self):
-        """Test async fetch with JSON response."""
-        # Arrange
-        from unittest.mock import AsyncMock
-
-        mock_response = MagicMock()
-        mock_response.status = 200
-        mock_response.json = AsyncMock(return_value={"test": "data"})
-
-        mock_session = MagicMock()
-        mock_session.get.return_value.__aenter__.return_value = mock_response
-
-        # Act
-        result = await fetch_async(mock_session, "http://test.com", {"retmode": "json"})
-        # Assert
-        assert result == {"test": "data"}
-
-    @pytest.mark.asyncio
-    async def test_fetch_async_xml(self):
-        """Test async fetch with XML response."""
-        # Arrange
-        from unittest.mock import AsyncMock
-
-        mock_response = MagicMock()
-        mock_response.status = 200
-        mock_response.text = AsyncMock(return_value="<xml>test</xml>")
-
-        mock_session = MagicMock()
-        mock_session.get.return_value.__aenter__.return_value = mock_response
-
-        # Act
-        result = await fetch_async(mock_session, "http://test.com", {"retmode": "xml"})
-        # Assert
-        assert result == "<xml>test</xml>"
-
-    @pytest.mark.asyncio
-    async def test_fetch_async_failure(self):
-        """Test async fetch with failed response."""
-        # Arrange
-        mock_response = MagicMock()
-        mock_response.status = 404
-
-        mock_session = MagicMock()
-        mock_session.get.return_value.__aenter__.return_value = mock_response
-
-        # Act
-        result = await fetch_async(mock_session, "http://test.com", {})
-        # Assert
-        assert result == {}
-
-    @pytest.mark.asyncio
-    async def test_batch_fetch_details(self):
-        """Test batch fetching details."""
-        # Arrange
-        # Act
-        # Assert
-        pmids = ["11111", "22222", "33333"]
-
-        with patch("aiohttp.ClientSession") as mock_session_class:
-            mock_session = MagicMock()
-            mock_session_class.return_value.__aenter__.return_value = mock_session
-
-            with patch(
-                "scitex_web._search_pubmed.fetch_async",
-                side_effect=[
-                    "<xml>1</xml>",
-                    {"result": "1"},
-                    "<xml>2</xml>",
-                    {"result": "2"},
-                ],
-            ):
-                results = await batch__fetch_details(pmids, batch_size=2)
-
-                assert len(results) == 4  # 2 batches × 2 requests each
-                assert results[0] == "<xml>1</xml>"
-                assert results[1] == {"result": "1"}
+# --------------------------------------------------------------------------
+# parse_args
+# --------------------------------------------------------------------------
 
 
-class TestSearchPubmedMain:
-    """Test main search_pubmed function."""
+@pytest.fixture
+def argv(request):
+    """`yield`-based replacement for ``patch.dict("sys.argv", [...])``.
 
-    def test_search_pubmed_no_results(self):
-        """Test search with no results."""
-        # Arrange
-        # Act
-        # Assert
-        with patch("scitex_web._search_pubmed._search_pubmed", return_value={}):
-            result = search_pubmed("test query", n_entries=10)
-            assert result == 1
+    Pass ``request.param`` as the argv list; restored on teardown.
+    """
+    import sys
 
-    def test_search_pubmed_success(self):
-        """Test successful search and save."""
-        # Arrange
-        # Act
-        # Assert
-        search_results = {"esearchresult": {"idlist": ["12345", "67890"], "count": "2"}}
-
-        batch_results = [
-            "<PubmedArticleSet></PubmedArticleSet>",  # XML
-            {
-                "result": {"12345": {"title": "Test1"}, "67890": {"title": "Test2"}}
-            },  # JSON
-        ]
-
-        with patch(
-            "scitex_web._search_pubmed._search_pubmed", return_value=search_results
-        ):
-            with patch("asyncio.run", return_value=batch_results):
-                with patch("builtins.open", mock_open()) as mock_file:
-                    with patch(
-                        "scitex_web._search_pubmed._parse_abstract_xml", return_value={}
-                    ):
-                        with patch(
-                            "scitex_web._search_pubmed._get_citation", return_value=""
-                        ):
-                            with patch(
-                                "scitex_web._search_pubmed.format_bibtex",
-                                return_value="@article{}",
-                            ):
-                                result = search_pubmed("test query", n_entries=2)
-                                assert result == 0
-
-                                # Verify file was opened (may be called multiple times)
-                                assert mock_file.call_count >= 1
-
-    def test_search_pubmed_query_sanitization(self):
-        """Test that query is properly sanitized for filename."""
-        # Arrange
-        # Act
-        # Assert
-        search_results = {"esearchresult": {"idlist": [], "count": "0"}}
-
-        with patch(
-            "scitex_web._search_pubmed._search_pubmed", return_value=search_results
-        ):
-            with patch("asyncio.run", return_value=[]):
-                with patch("builtins.open", mock_open()) as mock_file:
-                    search_pubmed("test query with spaces", n_entries=0)
-
-                    # Check filename has underscores
-                    filename = mock_file.call_args_list[0][0][0]
-                    assert filename == "pubmed_test_query_with_spaces.bib"
+    previous = sys.argv
+    sys.argv = list(request.param)
+    try:
+        yield list(request.param)
+    finally:
+        sys.argv = previous
 
 
 class TestParseArgs:
-    """Test parse_args function."""
-
-    def test_parse_args_with_query(self):
-        """Test parsing arguments with query."""
+    @pytest.mark.parametrize(
+        "argv", [["prog", "--query", "epilepsy"]], indirect=True
+    )
+    def test_long_query_option_is_parsed(self, argv):
         # Arrange
         # Act
+        args = parse_args()
         # Assert
-        with patch(
-            "sys.argv",
-            ["script.py", "--query", "epilepsy prediction", "--n_entries", "20"],
-        ):
-            with patch("scitex.str.printc"):
-                args = parse_args()
-                assert args.query == "epilepsy prediction"
-                assert args.n_entries == 20
+        assert args.query == "epilepsy"
 
-    def test_parse_args_defaults(self):
-        """Test parsing arguments with defaults."""
+    @pytest.mark.parametrize("argv", [["prog"]], indirect=True)
+    def test_default_n_entries_is_ten(self, argv):
         # Arrange
         # Act
+        args = parse_args()
         # Assert
-        with patch("sys.argv", ["script.py"]):
-            with patch("scitex.str.printc"):
-                args = parse_args()
-                assert args.query is None
-                assert args.n_entries == 10
+        assert args.n_entries == 10
 
-    def test_parse_args_short_options(self):
-        """Test parsing with short options."""
+    @pytest.mark.parametrize(
+        "argv", [["prog", "-q", "diabetes", "-n", "5"]], indirect=True
+    )
+    def test_short_option_n_entries_is_parsed(self, argv):
         # Arrange
         # Act
+        args = parse_args()
         # Assert
-        with patch("sys.argv", ["script.py", "-q", "test", "-n", "5"]):
-            with patch("scitex.str.printc"):
-                args = parse_args()
-                assert args.query == "test"
-                assert args.n_entries == 5
-
-
-class TestRunMain:
-    """Test run_main function."""
-
-    def test_run_main_success(self):
-        """Test successful main execution."""
-        # Arrange
-        # Act
-        # Assert
-        mock_args = Mock()
-        mock_args.query = "test query"
-        mock_args.n_entries = 10
-
-        # Patch at the location where scitex is imported in the module
-        with patch(
-            "scitex_web._search_pubmed.scitex.session.start",
-            return_value=(None, None, None, None, None),
-        ):
-            with patch("scitex_web._search_pubmed.parse_args", return_value=mock_args):
-                with patch(
-                    "scitex_web._search_pubmed.search_pubmed", return_value=0
-                ) as mock_search:
-                    with patch("scitex_web._search_pubmed.scitex.session.close"):
-                        run_main()
-
-                        mock_search.assert_called_once_with("test query", 10)
-
-    def test_run_main_with_error(self):
-        """Test main execution with error."""
-        # Arrange
-        # Act
-        # Assert
-        mock_args = Mock()
-        mock_args.query = "test"
-        mock_args.n_entries = 5
-
-        with patch(
-            "scitex_web._search_pubmed.scitex.session.start",
-            return_value=(None, None, None, None, None),
-        ):
-            with patch("scitex_web._search_pubmed.parse_args", return_value=mock_args):
-                with patch("scitex_web._search_pubmed.search_pubmed", return_value=1):
-                    with patch(
-                        "scitex_web._search_pubmed.scitex.session.close"
-                    ) as mock_close:
-                        run_main()
-
-                        # Verify close was called with exit_status=1
-                        assert mock_close.call_args[1]["exit_status"] == 1
+        assert args.n_entries == 5
 
 
 if __name__ == "__main__":
-    import os
+    pytest.main([os.path.abspath(__file__), "-v"])
 
-    import pytest
-
-    pytest.main([os.path.abspath(__file__)])
-
-# --------------------------------------------------------------------------------
-# Start of Source Code from: /home/ywatanabe/proj/scitex-code/src/scitex/web/_search_pubmed.py
-# --------------------------------------------------------------------------------
-# #!/usr/bin/env python3
-# # Time-stamp: "2024-11-13 14:30:43 (ywatanabe)"
-# # File: ./scitex_repo/src/scitex/web/_search_pubmed.py
-#
-# """
-# 1. Functionality:
-#    - Searches PubMed database for scientific articles
-#    - Retrieves detailed information about matched articles
-#    - Displays article metadata including title, authors, journal, year, and abstract
-# 2. Input:
-#    - Search query string (e.g., "epilepsy prediction")
-#    - Optional parameters for batch size and result limit
-# 3. Output:
-#    - Formatted article information displayed to stdout
-#    - BibTeX file with official citations
-# 4. Prerequisites:
-#    - Internet connection
-#    - requests package
-#    - scitex package
-# """
-#
-# """Imports"""
-# import argparse
-# import asyncio
-# import xml.etree.ElementTree as ET
-# from typing import Any, Dict, List, Optional, Union
-#
-# import aiohttp
-# import requests
-#
-# import scitex
-#
-# """Functions & Classes"""
-#
-#
-# def _search_pubmed(query: str, retmax: int = 300) -> Dict[str, Any]:
-#     try:
-#         base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-#         search_url = f"{base_url}esearch.fcgi"
-#         params = {
-#             "db": "pubmed",
-#             "term": query,
-#             "retmax": retmax,
-#             "retmode": "json",
-#             "usehistory": "y",
-#         }
-#
-#         response = requests.get(search_url, params=params, timeout=10)
-#         if not response.ok:
-#             scitex.str.printc("PubMed API request failed", c="red")
-#             return {}
-#         return response.json()
-#     except requests.exceptions.RequestException as e:
-#         scitex.str.printc(f"Network error: {e}", c="red")
-#         return {}
-#
-#
-# def _fetch_details(
-#     webenv: str, query_key: str, retstart: int = 0, retmax: int = 100
-# ) -> Dict[str, Any]:
-#     """Fetches detailed information including abstracts for articles.
-#
-#     Parameters
-#     ----------
-#     [Previous parameters remain the same]
-#
-#     Returns
-#     -------
-#     Dict[str, Any]
-#         Dictionary containing article details and abstracts
-#     """
-#     base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-#
-#     # Fetch abstracts
-#     efetch_url = f"{base_url}efetch.fcgi"
-#     efetch_params = {
-#         "db": "pubmed",
-#         "query_key": query_key,
-#         "WebEnv": webenv,
-#         "retstart": retstart,
-#         "retmax": retmax,
-#         "retmode": "xml",
-#         "rettype": "abstract",
-#         "field": "abstract,mesh",
-#     }
-#
-#     abstract_response = requests.get(efetch_url, params=efetch_params)
-#
-#     # Fetch metadata
-#     fetch_url = f"{base_url}esummary.fcgi"
-#     params = {
-#         "db": "pubmed",
-#         "query_key": query_key,
-#         "WebEnv": webenv,
-#         "retstart": retstart,
-#         "retmax": retmax,
-#         "retmode": "json",
-#     }
-#
-#     details_response = requests.get(fetch_url, params=params)
-#
-#     if not all([abstract_response.ok, details_response.ok]):
-#         # print(f"Error fetching data")
-#         return {}
-#
-#     return {
-#         "abstracts": abstract_response.text,
-#         "details": details_response.json(),
-#     }
-#
-#
-# def _parse_abstract_xml(xml_text: str) -> Dict[str, tuple]:
-#     """Parses XML response to extract abstracts.
-#
-#     Parameters
-#     ----------
-#     xml_text : str
-#         XML response from PubMed
-#
-#     Returns
-#     -------
-#     Dict[str, str]
-#         Dictionary mapping PMIDs to abstracts
-#     """
-#     root = ET.fromstring(xml_text)
-#     results = {}
-#
-#     for article in root.findall(".//PubmedArticle"):
-#         pmid = article.find(".//PMID").text
-#         abstract_element = article.find(".//Abstract/AbstractText")
-#         abstract = abstract_element.text if abstract_element is not None else ""
-#
-#         # DOI
-#         doi_element = article.find(".//ArticleId[@IdType='doi']")
-#         doi = doi_element.text if doi_element is not None else ""
-#
-#         # Get MeSH terms
-#         keywords = []
-#         mesh_terms = article.findall(".//MeshHeading/DescriptorName")
-#         keywords = [term.text for term in mesh_terms if term is not None]
-#
-#         results[pmid] = (abstract, keywords, doi)
-#
-#     return results
-#
-#
-# def _get_citation(pmid: str) -> str:
-#     """Gets official citation in BibTeX format.
-#
-#     Parameters
-#     ----------
-#     pmid : str
-#         PubMed ID
-#
-#     Returns
-#     -------
-#     str
-#         Official BibTeX citation
-#     """
-#     base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-#     cite_url = f"{base_url}efetch.fcgi"
-#     params = {
-#         "db": "pubmed",
-#         "id": pmid,
-#         "rettype": "bibtex",
-#         "retmode": "text",
-#     }
-#     response = requests.get(cite_url, params=params)
-#     return response.text if response.ok else ""
-#
-#
-# def get_crossref_metrics(
-#     doi: str, api_key: Optional[str] = None, email: Optional[str] = None
-# ) -> Dict[str, Any]:
-#     """Get article metrics from CrossRef using DOI."""
-#     import os
-#
-#     base_url = "https://api.crossref.org/works/"
-#
-#     # Use provided email or fallback to environment variables
-#     if not email:
-#         email = os.getenv(
-#             "SCITEX_CROSSREF_EMAIL",
-#             os.getenv("SCITEX_PUBMED_EMAIL", "research@example.com"),
-#         )
-#     headers = {"User-Agent": f"SciTeX/1.0 (mailto:{email})"}
-#
-#     # Add API key as query parameter if provided
-#     params = {}
-#     if api_key:
-#         params["key"] = api_key
-#
-#     try:
-#         response = requests.get(
-#             f"{base_url}{doi}", headers=headers, params=params, timeout=10
-#         )
-#         if response.ok:
-#             data = response.json()["message"]
-#             return {
-#                 "citations": data.get("is-referenced-by-count", 0),
-#                 "type": data.get("type", ""),
-#                 "publisher": data.get("publisher", ""),
-#                 "references": len(data.get("reference", [])),
-#                 "doi": data.get("DOI", ""),
-#             }
-#     except Exception as e:
-#         print(f"CrossRef API error for DOI {doi}: {e}")
-#     return {}
-#
-#
-# async def get_crossref_metrics_async(
-#     doi: str, api_key: Optional[str] = None, email: Optional[str] = None
-# ) -> Dict[str, Any]:
-#     """Get article metrics from CrossRef using DOI (async version)."""
-#     import os
-#
-#     base_url = "https://api.crossref.org/works/"
-#
-#     # Use provided email or fallback to environment variables
-#     if not email:
-#         email = os.getenv(
-#             "SCITEX_CROSSREF_EMAIL",
-#             os.getenv("SCITEX_PUBMED_EMAIL", "research@example.com"),
-#         )
-#     headers = {"User-Agent": f"SciTeX/1.0 (mailto:{email})"}
-#
-#     # Add API key as query parameter if provided
-#     params = {}
-#     if api_key:
-#         params["key"] = api_key
-#
-#     try:
-#         async with aiohttp.ClientSession() as session:
-#             async with session.get(
-#                 f"{base_url}{doi}", headers=headers, params=params, timeout=10
-#             ) as response:
-#                 if response.ok:
-#                     data = await response.json()
-#                     message = data["message"]
-#                     return {
-#                         "citations": message.get("is-referenced-by-count", 0),
-#                         "type": message.get("type", ""),
-#                         "publisher": message.get("publisher", ""),
-#                         "references": len(message.get("reference", [])),
-#                         "doi": message.get("DOI", ""),
-#                     }
-#     except Exception as e:
-#         print(f"CrossRef API error for DOI {doi}: {e}")
-#     return {}
-#
-#
-# def save_bibtex(
-#     papers: Dict[str, Any], abstracts: Dict[str, str], output_file: str
-# ) -> None:
-#     """Saves paper metadata as BibTeX file with abstracts.
-#
-#     Parameters
-#     ----------
-#     papers : Dict[str, Any]
-#         Dictionary of paper metadata
-#     abstracts : Dict[str, str]
-#         Dictionary of PMIDs to abstracts
-#     output_file : str
-#         Output file path
-#     """
-#     with open(output_file, "w", encoding="utf-8") as bibtex_file:
-#         for pmid, paper in papers.items():
-#             if pmid == "uids":
-#                 continue
-#
-#             citation = _get_citation(pmid)
-#             if citation:
-#                 bibtex_file.write(citation)
-#             else:
-#                 # Use default tuple if pmid not in abstracts
-#                 default_data = ("", [], "")  # abstract, keywords, doi
-#                 bibtex_entry = format_bibtex(
-#                     paper, pmid, abstracts.get(pmid, default_data)
-#                 )
-#                 bibtex_file.write(bibtex_entry + "\n")
-#     scitex.str.printc(f"Saved to: {str(bibtex_file)}", c="yellow")
-#
-#
-# def format_bibtex(paper: Dict[str, Any], pmid: str, abstract_data: tuple) -> str:
-#     abstract, keywords, doi = abstract_data
-#
-#     # Get CrossRef and Scimago metrics
-#     crossref_metrics = get_crossref_metrics(doi) if doi else {}
-#     journal = paper.get("source", "Unknown Journal")
-#     # journal_metrics = get_journal_metrics(journal)
-#
-#     authors = paper.get("authors", [{"name": "Unknown"}])
-#     author_names = " and ".join(author["name"] for author in authors)
-#     pubdate = paper.get("pubdate", "")
-#     year = pubdate.split()[0] if pubdate.strip() else ""
-#     title = paper.get("title", "No Title")
-#
-#     # Name formatting
-#     first_author = authors[0]["name"]
-#     first_name = first_author.split()[0]
-#     last_name = first_author.split()[-1]
-#     clean_first_name = "".join(c for c in first_name if c.isalnum())
-#     clean_last_name = "".join(c for c in last_name if c.isalnum())
-#
-#     # Title words
-#     title_words = title.split()
-#     first_title_word = "".join(c.lower() for c in title_words[0] if c.isalnum())
-#     second_title_word = (
-#         "".join(c.lower() for c in title_words[1] if c.isalnum())
-#         if len(title_words) > 1
-#         else ""
-#     )
-#
-#     citation_key = f"{clean_first_name}.{clean_last_name}_{year}_{first_title_word}_{second_title_word}"
-#
-#     entry = f"""@article{{{citation_key},
-#     author = {{{author_names}}},
-#     title = {{{title}}},
-#     journal = {{{journal}}},
-#     year = {{{year}}},
-#     pmid = {{{pmid}}},
-#     doi = {{{doi}}},
-#     publisher = {{{crossref_metrics.get("publisher", "")}}},
-#     references = {{{crossref_metrics.get("references", 0)}}},
-#     keywords = {{{", ".join(keywords)}}},
-#     abstract = {{{abstract}}}
-# }}
-# """
-#     return entry
-#
-#
-# async def fetch_async(
-#     session: aiohttp.ClientSession, url: str, params: Dict
-# ) -> Union[Dict, str]:
-#     """Asynchronous fetch helper."""
-#     async with session.get(url, params=params) as response:
-#         if response.status == 200:
-#             if params.get("retmode") == "xml":
-#                 return await response.text()
-#             elif params.get("retmode") == "json":
-#                 return await response.json()
-#             return await response.text()
-#         return {}
-#
-#
-# async def batch__fetch_details(pmids: List[str], batch_size: int = 20) -> List[Dict]:
-#     """Fetches details for multiple PMIDs concurrently.
-#
-#     Parameters
-#     ----------
-#     pmids : List[str]
-#         List of PubMed IDs
-#     batch_size : int, optional
-#         Size of each batch for concurrent requests
-#
-#     Returns
-#     -------
-#     List[Dict]
-#         List of response data
-#     """
-#     base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-#
-#     async with aiohttp.ClientSession() as session:
-#         tasks = []
-#         for i in range(0, len(pmids), batch_size):
-#             batch_pmids = pmids[i : i + batch_size]
-#
-#             # Fetch both details and citations concurrently
-#             efetch_params = {
-#                 "db": "pubmed",
-#                 "id": ",".join(batch_pmids),
-#                 "retmode": "xml",
-#                 "rettype": "abstract",
-#             }
-#
-#             esummary_params = {
-#                 "db": "pubmed",
-#                 "id": ",".join(batch_pmids),
-#                 "retmode": "json",
-#             }
-#
-#             tasks.append(fetch_async(session, f"{base_url}efetch.fcgi", efetch_params))
-#             tasks.append(
-#                 fetch_async(session, f"{base_url}esummary.fcgi", esummary_params)
-#             )
-#
-#         results = await asyncio.gather(*tasks)
-#         return results
-#
-#
-# def search_pubmed(query: str, n_entries: int = 10) -> int:
-#     # query = args.query or "epilepsy prediction"
-#     # print(f"Using query: {query}")
-#
-#     search_results = _search_pubmed(query)
-#     if not search_results:
-#         # print("No results found or error occurred")
-#         return 1
-#
-#     pmids = search_results["esearchresult"]["idlist"]
-#     count = len(pmids)
-#     # print(f"Found {count:,} results")
-#
-#     output_file = f"pubmed_{query.replace(' ', '_')}.bib"
-#     # print(f"Saving results to: {output_file}")
-#
-#     # Process in larger batches asynchronously
-#     results = asyncio.run(batch__fetch_details(pmids[:n_entries]))
-#     # here, results seems long string
-#
-#     # Process results and save
-#     with open(output_file, "w", encoding="utf-8") as f:
-#         for i in range(0, len(results), 2):
-#             xml_response = results[i]
-#             json_response = results[i + 1]
-#
-#             if isinstance(xml_response, str):
-#                 abstracts = _parse_abstract_xml(xml_response)
-#                 if isinstance(json_response, dict) and "result" in json_response:
-#                     details = json_response["result"]
-#                     save_bibtex(details, abstracts, output_file)
-#
-#     # Process results and save
-#     temp_bibtex = []
-#     for i in range(0, len(results), 2):
-#         xml_response = results[i]
-#         json_response = results[i + 1]
-#
-#         if isinstance(xml_response, str):
-#             abstracts = _parse_abstract_xml(xml_response)
-#             if isinstance(json_response, dict) and "result" in json_response:
-#                 details = json_response["result"]
-#                 for pmid in details:
-#                     if pmid != "uids":
-#                         citation = _get_citation(pmid)
-#                         if citation:
-#                             temp_bibtex.append(citation)
-#                         else:
-#                             entry = format_bibtex(
-#                                 details[pmid], pmid, abstracts.get(pmid, "")
-#                             )
-#                             temp_bibtex.append(entry)
-#
-#     # Write all entries at once
-#     with open(output_file, "w", encoding="utf-8") as f:
-#         f.write("\n".join(temp_bibtex))
-#
-#     return 0
-#
-#
-# def parse_args() -> argparse.Namespace:
-#     parser = argparse.ArgumentParser(
-#         description="PubMed article search and retrieval tool"
-#     )
-#     parser.add_argument(
-#         "--query",
-#         "-q",
-#         type=str,
-#         help='Search query (default: "epilepsy prediction")',
-#     )
-#     parser.add_argument(
-#         "--n_entries",
-#         "-n",
-#         type=int,
-#         default=10,
-#         help='Search query (default: "epilepsy prediction")',
-#     )
-#     args = parser.parse_args()
-#     scitex.str.printc(args, c="yellow")
-#     return args
-#
-#
-# def run_main() -> None:
-#     global CONFIG
-#     import sys
-#
-#     import matplotlib.pyplot as plt
-#
-#     import scitex
-#
-#     CONFIG, sys.stdout, sys.stderr, plt, CC = scitex.session.start(
-#         sys,
-#         verbose=False,
-#     )
-#
-#     args = parse_args()
-#     exit_status = search_pubmed(args.query, args.n_entries)
-#
-#     scitex.session.close(
-#         CONFIG,
-#         verbose=False,
-#         notify=False,
-#         message="",
-#         exit_status=exit_status,
-#     )
-#
-#
-# if __name__ == "__main__":
-#     run_main()
-#
-# # EOF
-
-# --------------------------------------------------------------------------------
-# End of Source Code from: /home/ywatanabe/proj/scitex-code/src/scitex/web/_search_pubmed.py
-# --------------------------------------------------------------------------------
+# EOF

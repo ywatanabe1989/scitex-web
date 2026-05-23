@@ -316,7 +316,12 @@ async def get_crossref_metrics_async(
 
 
 def save_bibtex(
-    papers: Dict[str, Any], abstracts: Dict[str, str], output_file: str
+    papers: Dict[str, Any],
+    abstracts: Dict[str, str],
+    output_file: str,
+    *,
+    citation_lookup=None,
+    crossref_lookup=None,
 ) -> None:
     """Saves paper metadata as BibTeX file with abstracts.
 
@@ -328,30 +333,53 @@ def save_bibtex(
         Dictionary of PMIDs to abstracts
     output_file : str
         Output file path
+    citation_lookup
+        Injected ``pmid -> bibtex_text`` callable; defaults to
+        :func:`_get_citation`. Tests pass a hand-rolled fake.
+    crossref_lookup
+        Forwarded to :func:`format_bibtex`; see that function's docstring.
     """
+    if citation_lookup is None:
+        citation_lookup = _get_citation
     with open(output_file, "w", encoding="utf-8") as bibtex_file:
         for pmid, paper in papers.items():
             if pmid == "uids":
                 continue
 
-            citation = _get_citation(pmid)
+            citation = citation_lookup(pmid)
             if citation:
                 bibtex_file.write(citation)
             else:
                 # Use default tuple if pmid not in abstracts
                 default_data = ("", [], "")  # abstract, keywords, doi
                 bibtex_entry = format_bibtex(
-                    paper, pmid, abstracts.get(pmid, default_data)
+                    paper,
+                    pmid,
+                    abstracts.get(pmid, default_data),
+                    crossref_lookup=crossref_lookup,
                 )
                 bibtex_file.write(bibtex_entry + "\n")
     scitex.str.printc(f"Saved to: {str(bibtex_file)}", c="yellow")
 
 
-def format_bibtex(paper: Dict[str, Any], pmid: str, abstract_data: tuple) -> str:
+def format_bibtex(
+    paper: Dict[str, Any],
+    pmid: str,
+    abstract_data: tuple,
+    *,
+    crossref_lookup=None,
+) -> str:
+    """Format ``paper`` as a single ``@article`` BibTeX entry.
+
+    ``crossref_lookup`` is the injected DOI-to-metrics callable; defaults
+    to :func:`get_crossref_metrics`. Tests pass a hand-rolled fake.
+    """
     abstract, keywords, doi = abstract_data
 
+    if crossref_lookup is None:
+        crossref_lookup = get_crossref_metrics
     # Get CrossRef and Scimago metrics
-    crossref_metrics = get_crossref_metrics(doi) if doi else {}
+    crossref_metrics = crossref_lookup(doi) if doi else {}
     journal = paper.get("source", "Unknown Journal")
     # journal_metrics = get_journal_metrics(journal)
 
