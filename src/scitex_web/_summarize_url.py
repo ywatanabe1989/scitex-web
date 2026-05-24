@@ -11,9 +11,8 @@ from pprint import pprint
 
 import requests
 from bs4 import BeautifulSoup
-from tqdm import tqdm
-
 from scitex_dev import try_import_optional
+from tqdm import tqdm
 
 Document = try_import_optional(
     "readability", "Document", extra="readability", pkg="scitex-web"
@@ -62,14 +61,27 @@ import re
 #     return visited, contents
 
 
-def extract_main_content(html):
-    if Document is None:
+_DOCUMENT_DEFAULT = object()  # sentinel: "caller did not specify"
+
+
+def extract_main_content(html, *, document_cls=_DOCUMENT_DEFAULT):
+    """Extract readable text from raw HTML.
+
+    When ``document_cls`` is omitted it uses the module-level ``Document``
+    (the readability extractor). Pass ``document_cls=None`` explicitly to
+    force the tag-stripping fallback, or pass a different extractor class.
+    Callers normally omit it.
+    """
+    if document_cls is _DOCUMENT_DEFAULT:
+        document_cls = Document
+
+    if document_cls is None:
         # Fallback: just strip HTML tags
         content = re.sub("<[^<]+?>", "", html)
         content = " ".join(content.split())
-        return content[:5000]  # Limit to first 5000 chars
+        return content[:5_000]  # Limit to first 5000 chars
 
-    doc = Document(html)
+    doc = document_cls(html)
     content = doc.summary()
     # Remove HTML tags
     content = re.sub("<[^<]+?>", "", content)
@@ -78,14 +90,7 @@ def extract_main_content(html):
     return content
 
 
-def crawl_url(url, max_depth=1, *, http_get=None):
-    """Breadth-first crawl from ``url`` up to ``max_depth`` hops.
-
-    ``http_get`` is the injected HTTP GET callable; defaults to
-    :func:`requests.get`. Tests pass a hand-rolled fake.
-    """
-    if http_get is None:
-        http_get = requests.get
+def crawl_url(url, max_depth=1):
     print("\nCrawling...")
     visited = set()
     to_visit = [(url, 0)]
@@ -97,7 +102,7 @@ def crawl_url(url, max_depth=1, *, http_get=None):
             continue
 
         try:
-            response = http_get(current_url)
+            response = requests.get(current_url)
             if response.status_code == 200:
                 visited.add(current_url)
                 main_content = extract_main_content(response.text)
@@ -115,25 +120,26 @@ def crawl_url(url, max_depth=1, *, http_get=None):
     return visited, contents
 
 
-def crawl_to_json(start_url, *, http_get=None, llm=None):
-    """Crawl ``start_url`` and return a JSON summary of each visited page.
+def crawl_to_json(start_url, *, crawler=None, genai_factory=None):
+    """Crawl ``start_url`` and summarize each page into a JSON document.
 
-    ``http_get`` is the injected HTTP GET callable; defaults to
-    :func:`requests.get`. ``llm`` is the injected language-model callable
-    used to summarise each page (signature ``str -> str``); defaults to a
-    fresh ``scitex_ai.GenAI("gpt-4o-mini")`` instance. Tests pass
-    hand-rolled fakes.
+    ``crawler`` defaults to :func:`crawl_url`; ``genai_factory`` defaults to
+    :func:`_get_genai`. Both are injectable so callers can supply a real
+    local crawler / a deterministic summarizer without monkey-patching.
     """
+    if crawler is None:
+        crawler = crawl_url
+    if genai_factory is None:
+        genai_factory = _get_genai
+
     if not start_url.startswith("http"):
         start_url = "https://" + start_url
-    crawled_urls, contents = crawl_url(start_url, http_get=http_get)
-
-    if llm is None:
-        llm = _get_genai("gpt-4o-mini")
+    crawled_urls, contents = crawler(start_url)
 
     print("\nSummalizing as json...")
 
     def process_url(url):
+        llm = genai_factory("gpt-4o-mini")
         return {
             "url": url,
             "content": llm(f"Summarize this page in 1 line:\n\n{contents[url]}"),
@@ -166,28 +172,33 @@ def _get_genai(model: str):
     return GenAI(model)
 
 
-def summarize_all(json_contents, *, llm=None):
-    """Return a 5-bullet summary of ``json_contents``.
+def summarize_all(json_contents, *, genai_factory=None):
+    """Summarize a crawled-JSON document into bullet points via an LLM.
 
-    ``llm`` is the injected language-model callable (signature
-    ``str -> str``). Defaults to a fresh ``scitex_ai.GenAI("gpt-4o-mini")``.
-    Tests pass a hand-rolled fake.
+    ``genai_factory`` defaults to :func:`_get_genai`; injectable so callers
+    can pass a deterministic summarizer.
     """
-    if llm is None:
-        llm = _get_genai("gpt-4o-mini")
+    if genai_factory is None:
+        genai_factory = _get_genai
+    llm = genai_factory("gpt-4o-mini")
     out = llm(f"Summarize this json file with 5 bullet points:\n\n{json_contents}")
     return out
 
 
-def summarize_url(start_url, *, http_get=None, llm=None):
-    """Crawl ``start_url``, summarise each page, and return the rolled-up summary.
+def summarize_url(start_url, *, crawl_fn=None, summarize_fn=None):
+    """Crawl ``start_url`` then summarize it.
 
-    ``http_get`` and ``llm`` are injected collaborators; defaults are
-    :func:`requests.get` and a fresh ``scitex_ai.GenAI`` instance. Tests
-    pass hand-rolled fakes.
+    ``crawl_fn`` defaults to :func:`crawl_to_json`; ``summarize_fn`` defaults
+    to :func:`summarize_all`. Both are injectable so the composition can be
+    exercised with deterministic stand-ins.
     """
-    json_result = crawl_to_json(start_url, http_get=http_get, llm=llm)
-    ground_summary = summarize_all(json_result, llm=llm)
+    if crawl_fn is None:
+        crawl_fn = crawl_to_json
+    if summarize_fn is None:
+        summarize_fn = summarize_all
+
+    json_result = crawl_fn(start_url)
+    ground_summary = summarize_fn(json_result)
 
     pprint(ground_summary)
     return ground_summary, json_result

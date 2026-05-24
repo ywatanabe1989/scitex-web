@@ -7,10 +7,7 @@ we focus on the deterministic helpers (`_normalize_url_for_directory`,
 test environment can run without external services.
 """
 
-from __future__ import annotations
-
 import os
-from collections.abc import Iterator
 
 import pytest
 
@@ -22,38 +19,32 @@ from scitex_web.download_images import (
 
 
 @pytest.fixture
-def scitex_dir_env(tmp_path) -> Iterator[str]:
-    """Set ``SCITEX_DIR`` to a tmp dir for the duration of one test.
-
-    `yield`-based env fixture, the canonical no-mock replacement for
-    ``monkeypatch.setenv``. The original value is restored on teardown.
-    """
-    # Arrange
-    previous = os.environ.get("SCITEX_DIR")
+def scitex_dir_env(tmp_path):
+    """Set SCITEX_DIR to a tmp path for the test, restore afterward."""
+    saved = os.environ.get("SCITEX_DIR")
     os.environ["SCITEX_DIR"] = str(tmp_path)
     try:
         yield str(tmp_path)
     finally:
-        if previous is None:
+        if saved is None:
             os.environ.pop("SCITEX_DIR", None)
         else:
-            os.environ["SCITEX_DIR"] = previous
+            os.environ["SCITEX_DIR"] = saved
 
 
 @pytest.fixture
-def scitex_dir_unset() -> Iterator[None]:
-    """Ensure ``SCITEX_DIR`` is unset for the test, restored on teardown."""
-    # Arrange
-    previous = os.environ.pop("SCITEX_DIR", None)
+def no_scitex_dir_env():
+    """Ensure SCITEX_DIR is unset for the test, restore afterward."""
+    saved = os.environ.pop("SCITEX_DIR", None)
     try:
-        yield None
+        yield
     finally:
-        if previous is not None:
-            os.environ["SCITEX_DIR"] = previous
+        if saved is not None:
+            os.environ["SCITEX_DIR"] = saved
 
 
 class TestNormalizeUrlForDirectory:
-    def test_strips_www_prefix_from_domain(self):
+    def test_strips_www_and_uses_domain_only(self):
         # Arrange
         url = "https://www.example.com/"
         # Act
@@ -61,7 +52,7 @@ class TestNormalizeUrlForDirectory:
         # Assert
         assert out == "example.com"
 
-    def test_includes_domain_when_path_present(self):
+    def test_path_components_retain_domain_segment(self):
         # Arrange
         url = "https://example.com/foo/bar"
         # Act
@@ -69,7 +60,7 @@ class TestNormalizeUrlForDirectory:
         # Assert
         assert "example.com" in out
 
-    def test_joins_path_segments_with_dashes(self):
+    def test_path_components_join_with_dashes(self):
         # Arrange
         url = "https://example.com/foo/bar"
         # Act
@@ -77,7 +68,7 @@ class TestNormalizeUrlForDirectory:
         # Assert
         assert "foo-bar" in out
 
-    def test_strips_question_mark_from_query_string(self):
+    def test_unsafe_query_mark_is_stripped(self):
         # Arrange
         url = "https://example.com/a?b=1&c=2"
         # Act
@@ -85,7 +76,7 @@ class TestNormalizeUrlForDirectory:
         # Assert
         assert "?" not in out
 
-    def test_strips_ampersand_from_query_string(self):
+    def test_unsafe_ampersand_is_stripped(self):
         # Arrange
         url = "https://example.com/a?b=1&c=2"
         # Act
@@ -93,7 +84,7 @@ class TestNormalizeUrlForDirectory:
         # Assert
         assert "&" not in out
 
-    def test_collapses_consecutive_dashes(self):
+    def test_repeated_dashes_are_collapsed(self):
         # Arrange
         url = "https://example.com/a?b=1&c=2"
         # Act
@@ -101,7 +92,7 @@ class TestNormalizeUrlForDirectory:
         # Assert
         assert "--" not in out
 
-    def test_truncates_long_paths_to_100_chars(self):
+    def test_long_paths_truncated_to_100_chars(self):
         # Arrange
         url = "https://example.com/" + "x" * 500
         # Act
@@ -112,57 +103,47 @@ class TestNormalizeUrlForDirectory:
 
 class TestIsDirectImageUrl:
     @pytest.mark.parametrize(
-        "url",
+        "url, expected",
         [
-            "https://example.com/photo.jpg",
-            "https://example.com/photo.JPEG",
-            "https://example.com/img.png",
-            "https://example.com/anim.gif",
-            "https://example.com/pic.webp",
+            ("https://example.com/photo.jpg", True),
+            ("https://example.com/photo.JPEG", True),
+            ("https://example.com/img.png", True),
+            ("https://example.com/anim.gif", True),
+            ("https://example.com/pic.webp", True),
+            ("https://example.com/index.html", False),
+            ("https://example.com/", False),
+            ("https://example.com/folder", False),
         ],
     )
-    def test_returns_true_for_recognised_image_extensions(self, url):
+    def test_url_classification_matches_expected(self, url, expected):
         # Arrange
+        # (url + expected are parametrized inputs)
         # Act
         result = _is_direct_image_url(url)
         # Assert
-        assert result is True
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://example.com/index.html",
-            "https://example.com/",
-            "https://example.com/folder",
-        ],
-    )
-    def test_returns_false_for_non_image_urls(self, url):
-        # Arrange
-        # Act
-        result = _is_direct_image_url(url)
-        # Assert
-        assert result is False
+        assert result is expected
 
 
 class TestGetDefaultDownloadDir:
-    def test_returns_path_under_scitex_dir_env(self, scitex_dir_env):
+    def test_default_dir_starts_with_scitex_dir_env(self, scitex_dir_env):
         # Arrange
+        # (scitex_dir_env fixture sets SCITEX_DIR)
         # Act
         out = _get_default_download_dir()
         # Assert
         assert out.startswith(scitex_dir_env)
 
-    def test_returns_path_ending_in_web_downloads_when_env_set(
-        self, scitex_dir_env
-    ):
+    def test_default_dir_ends_with_web_downloads(self, scitex_dir_env):
         # Arrange
+        # (scitex_dir_env fixture sets SCITEX_DIR)
         # Act
         out = _get_default_download_dir()
         # Assert
         assert out.endswith(os.path.join("web", "downloads"))
 
-    def test_falls_back_to_home_dotscitex_when_env_unset(self, scitex_dir_unset):
+    def test_default_dir_falls_back_to_home_when_env_unset(self, no_scitex_dir_env):
         # Arrange
+        # (no_scitex_dir_env fixture clears SCITEX_DIR)
         # Act
         out = _get_default_download_dir()
         # Assert
