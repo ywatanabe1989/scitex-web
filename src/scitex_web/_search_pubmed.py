@@ -60,18 +60,14 @@ class _ScitexShim:
 scitex = _ScitexShim()
 
 
-def _search_pubmed(
-    query: str, retmax: int = 300, *, http_get=None
-) -> Dict[str, Any]:
-    """Search PubMed for ``query``; return parsed JSON or ``{}`` on failure.
+_EUTILS_BASE_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+_CROSSREF_BASE_URL = "https://api.crossref.org/works/"
 
-    ``http_get`` is the injected HTTP GET callable; defaults to
-    :func:`requests.get`. Tests pass a hand-rolled fake.
-    """
-    if http_get is None:
-        http_get = requests.get
+
+def _search_pubmed(
+    query: str, retmax: int = 300, *, base_url: str = _EUTILS_BASE_URL
+) -> Dict[str, Any]:
     try:
-        base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
         search_url = f"{base_url}esearch.fcgi"
         params = {
             "db": "pubmed",
@@ -81,7 +77,7 @@ def _search_pubmed(
             "usehistory": "y",
         }
 
-        response = http_get(search_url, params=params, timeout=10)
+        response = requests.get(search_url, params=params, timeout=10)
         if not response.ok:
             scitex.str.printc("PubMed API request failed", c="red")
             return {}
@@ -97,27 +93,19 @@ def _fetch_details(
     retstart: int = 0,
     retmax: int = 100,
     *,
-    http_get=None,
+    base_url: str = _EUTILS_BASE_URL,
 ) -> Dict[str, Any]:
     """Fetches detailed information including abstracts for articles.
 
     Parameters
     ----------
-    webenv, query_key, retstart, retmax
-        Forwarded to NCBI E-utilities.
-    http_get
-        Injected HTTP GET callable; defaults to :func:`requests.get`.
-        Tests pass a hand-rolled fake.
+    [Previous parameters remain the same]
 
     Returns
     -------
     Dict[str, Any]
         Dictionary containing article details and abstracts
     """
-    if http_get is None:
-        http_get = requests.get
-    base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
-
     # Fetch abstracts
     efetch_url = f"{base_url}efetch.fcgi"
     efetch_params = {
@@ -131,7 +119,7 @@ def _fetch_details(
         "field": "abstract,mesh",
     }
 
-    abstract_response = http_get(efetch_url, params=efetch_params)
+    abstract_response = requests.get(efetch_url, params=efetch_params)
 
     # Fetch metadata
     fetch_url = f"{base_url}esummary.fcgi"
@@ -144,7 +132,7 @@ def _fetch_details(
         "retmode": "json",
     }
 
-    details_response = http_get(fetch_url, params=params)
+    details_response = requests.get(fetch_url, params=params)
 
     if not all([abstract_response.ok, details_response.ok]):
         # print(f"Error fetching data")
@@ -191,25 +179,19 @@ def _parse_abstract_xml(xml_text: str) -> Dict[str, tuple]:
     return results
 
 
-def _get_citation(pmid: str, *, http_get=None) -> str:
+def _get_citation(pmid: str, *, base_url: str = _EUTILS_BASE_URL) -> str:
     """Gets official citation in BibTeX format.
 
     Parameters
     ----------
     pmid : str
         PubMed ID
-    http_get
-        Injected HTTP GET callable; defaults to :func:`requests.get`.
-        Tests pass a hand-rolled fake.
 
     Returns
     -------
     str
         Official BibTeX citation
     """
-    if http_get is None:
-        http_get = requests.get
-    base_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
     cite_url = f"{base_url}efetch.fcgi"
     params = {
         "db": "pubmed",
@@ -217,7 +199,7 @@ def _get_citation(pmid: str, *, http_get=None) -> str:
         "rettype": "bibtex",
         "retmode": "text",
     }
-    response = http_get(cite_url, params=params)
+    response = requests.get(cite_url, params=params)
     return response.text if response.ok else ""
 
 
@@ -226,18 +208,10 @@ def get_crossref_metrics(
     api_key: Optional[str] = None,
     email: Optional[str] = None,
     *,
-    http_get=None,
+    base_url: str = _CROSSREF_BASE_URL,
 ) -> Dict[str, Any]:
-    """Get article metrics from CrossRef using DOI.
-
-    ``http_get`` is the injected HTTP GET callable; defaults to
-    :func:`requests.get`. Tests pass a hand-rolled fake.
-    """
+    """Get article metrics from CrossRef using DOI."""
     import os
-
-    if http_get is None:
-        http_get = requests.get
-    base_url = "https://api.crossref.org/works/"
 
     # Use provided email or fallback to environment variables
     if not email:
@@ -255,7 +229,7 @@ def get_crossref_metrics(
         params["key"] = api_key
 
     try:
-        response = http_get(
+        response = requests.get(
             f"{base_url}{doi}", headers=headers, params=params, timeout=10
         )
         if response.ok:
@@ -272,114 +246,52 @@ def get_crossref_metrics(
     return {}
 
 
-async def get_crossref_metrics_async(
-    doi: str, api_key: Optional[str] = None, email: Optional[str] = None
-) -> Dict[str, Any]:
-    """Get article metrics from CrossRef using DOI (async version)."""
-    import os
-
-    base_url = "https://api.crossref.org/works/"
-
-    # Use provided email or fallback to environment variables
-    if not email:
-        email = (
-            os.getenv("SCITEX_SCHOLAR_CROSSREF_EMAIL")
-            or os.getenv("SCITEX_CROSSREF_EMAIL")
-            or os.getenv("SCITEX_SCHOLAR_PUBMED_EMAIL")
-            or os.getenv("SCITEX_PUBMED_EMAIL", "research@example.com")
-        )
-    headers = {"User-Agent": f"SciTeX/1.0 (mailto:{email})"}
-
-    # Add API key as query parameter if provided
-    params = {}
-    if api_key:
-        params["key"] = api_key
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{base_url}{doi}", headers=headers, params=params, timeout=10
-            ) as response:
-                if response.ok:
-                    data = await response.json()
-                    message = data["message"]
-                    return {
-                        "citations": message.get("is-referenced-by-count", 0),
-                        "type": message.get("type", ""),
-                        "publisher": message.get("publisher", ""),
-                        "references": len(message.get("reference", [])),
-                        "doi": message.get("DOI", ""),
-                    }
-    except Exception as e:
-        print(f"CrossRef API error for DOI {doi}: {e}")
-    return {}
-
-
 def save_bibtex(
     papers: Dict[str, Any],
     abstracts: Dict[str, str],
     output_file: str,
     *,
-    citation_lookup=None,
-    crossref_lookup=None,
+    citation_fn=None,
+    format_fn=None,
 ) -> None:
     """Saves paper metadata as BibTeX file with abstracts.
 
-    Parameters
-    ----------
-    papers : Dict[str, Any]
-        Dictionary of paper metadata
-    abstracts : Dict[str, str]
-        Dictionary of PMIDs to abstracts
-    output_file : str
-        Output file path
-    citation_lookup
-        Injected ``pmid -> bibtex_text`` callable; defaults to
-        :func:`_get_citation`. Tests pass a hand-rolled fake.
-    crossref_lookup
-        Forwarded to :func:`format_bibtex`; see that function's docstring.
+    ``citation_fn`` / ``format_fn`` default to :func:`_get_citation` /
+    :func:`format_bibtex`; injectable so the writing logic is testable
+    without network access.
     """
-    if citation_lookup is None:
-        citation_lookup = _get_citation
+    if citation_fn is None:
+        citation_fn = _get_citation
+    if format_fn is None:
+        format_fn = format_bibtex
+
     with open(output_file, "w", encoding="utf-8") as bibtex_file:
         for pmid, paper in papers.items():
             if pmid == "uids":
                 continue
 
-            citation = citation_lookup(pmid)
+            citation = citation_fn(pmid)
             if citation:
                 bibtex_file.write(citation)
             else:
                 # Use default tuple if pmid not in abstracts
                 default_data = ("", [], "")  # abstract, keywords, doi
-                bibtex_entry = format_bibtex(
-                    paper,
-                    pmid,
-                    abstracts.get(pmid, default_data),
-                    crossref_lookup=crossref_lookup,
-                )
+                bibtex_entry = format_fn(paper, pmid, abstracts.get(pmid, default_data))
                 bibtex_file.write(bibtex_entry + "\n")
     scitex.str.printc(f"Saved to: {str(bibtex_file)}", c="yellow")
 
 
 def format_bibtex(
-    paper: Dict[str, Any],
-    pmid: str,
-    abstract_data: tuple,
-    *,
-    crossref_lookup=None,
+    paper: Dict[str, Any], pmid: str, abstract_data: tuple, *, metrics_fn=None
 ) -> str:
-    """Format ``paper`` as a single ``@article`` BibTeX entry.
+    # ``metrics_fn`` defaults to get_crossref_metrics; injectable for tests.
+    if metrics_fn is None:
+        metrics_fn = get_crossref_metrics
 
-    ``crossref_lookup`` is the injected DOI-to-metrics callable; defaults
-    to :func:`get_crossref_metrics`. Tests pass a hand-rolled fake.
-    """
     abstract, keywords, doi = abstract_data
 
-    if crossref_lookup is None:
-        crossref_lookup = get_crossref_metrics
     # Get CrossRef and Scimago metrics
-    crossref_metrics = crossref_lookup(doi) if doi else {}
+    crossref_metrics = metrics_fn(doi) if doi else {}
     journal = paper.get("source", "Unknown Journal")
     # journal_metrics = get_journal_metrics(journal)
 
@@ -482,11 +394,12 @@ async def batch__fetch_details(pmids: List[str], batch_size: int = 20) -> List[D
         return results
 
 
-def search_pubmed(query: str, n_entries: int = 10) -> int:
-    # query = args.query or "epilepsy prediction"
-    # print(f"Using query: {query}")
-
-    search_results = _search_pubmed(query)
+def search_pubmed(
+    query: str, n_entries: int = 10, *, search_fn=None, fetch_fn=None
+) -> int:
+    # search_fn / fetch_fn default to _search_pubmed / async batch fetcher;
+    # injectable so the orchestration is testable offline.
+    search_results = (search_fn or _search_pubmed)(query)
     if not search_results:
         # print("No results found or error occurred")
         return 1
@@ -499,7 +412,9 @@ def search_pubmed(query: str, n_entries: int = 10) -> int:
     # print(f"Saving results to: {output_file}")
 
     # Process in larger batches asynchronously
-    results = asyncio.run(batch__fetch_details(pmids[:n_entries]))
+    results = (fetch_fn or (lambda ids: asyncio.run(batch__fetch_details(ids))))(
+        pmids[:n_entries]
+    )
     # here, results seems long string
 
     # Process results and save
@@ -569,7 +484,6 @@ def run_main() -> None:
     import sys
 
     import matplotlib.pyplot as plt
-
     import scitex
 
     CONFIG, sys.stdout, sys.stderr, plt, CC = scitex.session.start(

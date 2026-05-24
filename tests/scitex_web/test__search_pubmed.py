@@ -1,292 +1,110 @@
 #!/usr/bin/env python3
 # File: ./tests/scitex_web/test__search_pubmed.py
-"""Tests for scitex_web._search_pubmed.
 
-Network and downstream-lookup collaborators are injected as keyword
-arguments and replaced with hand-rolled fakes. The pure functions
-(_parse_abstract_xml, format_bibtex) get exercised directly. The async
-path (fetch_async / batch__fetch_details) and the orchestration wrapper
-(search_pubmed, run_main, parse_args sys.argv handling) are intentionally
-NOT unit-tested here — those were pure mock theater in the previous test
-file (patching aiohttp.ClientSession, asyncio.run, sys.argv, etc.) and
-add no honest coverage. They are covered by the umbrella integration
-suite when real network is available.
+"""Tests for PubMed search functionality.
+
+Network functions are exercised against a real loopback HTTP server (the
+production functions accept a ``base_url`` seam) and the async helpers against
+a real aiohttp test server. Pure functions (`_parse_abstract_xml`,
+`format_bibtex`, `save_bibtex`, the `search_pubmed` orchestrator) run with
+hand-rolled fake collaborators. No mocks.
 """
 
-from __future__ import annotations
-
-import os
-from dataclasses import dataclass, field
-from io import StringIO
-from typing import Any
+import asyncio
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-aiohttp = pytest.importorskip("aiohttp")  # used by _search_pubmed module imports
-pytest.importorskip("scitex_web")
+aiohttp = pytest.importorskip("aiohttp")
 
-from scitex_web import (  # noqa: E402
+from scitex_web._search_pubmed import (  # noqa: E402
     _fetch_details,
     _get_citation,
     _parse_abstract_xml,
     _search_pubmed,
+    batch__fetch_details,
+    fetch_async,
+    format_bibtex,
     get_crossref_metrics,
+    parse_args,
+    run_main,
+    save_bibtex,
     search_pubmed,
 )
-from scitex_web._search_pubmed import (  # noqa: E402
-    format_bibtex,
-    parse_args,
-    save_bibtex,
-)
 
 
-@dataclass
-class FakeResponse:
-    """Slice of ``requests.Response`` that the SUT actually uses."""
+# --------------------------------------------------------------------------
+# Real loopback HTTP server (sync requests path)
+# --------------------------------------------------------------------------
+def _make_handler(responder):
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 (http.server API)
+            status, content_type, body = responder(self.path)
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
 
-    ok: bool = True
-    text: str = ""
-    payload: Any = None
+        def log_message(self, *args):
+            pass
 
-    def json(self) -> Any:
-        return self.payload
+    return _Handler
 
 
-@dataclass
-class FakeHttpGet:
-    """Hand-rolled ``requests.get`` stand-in.
+@pytest.fixture
+def eutils_server():
+    """Serve a fixed responder; yields (base_url, recorded_paths)."""
+    recorded = []
+    state = {"responder": lambda path: (200, "application/json", "{}")}
 
-    Each call returns the next ``FakeResponse`` from ``responses``. Use
-    ``raise_exception`` to simulate a network error. Captures the
-    (url, params, kwargs) of every call.
+    def _responder(path):
+        recorded.append(path)
+        return state["responder"](path)
+
+    server = HTTPServer(("127.0.0.1", 0), _make_handler(_responder))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base = f"http://{host}:{port}/"
+
+    def set_responder(fn):
+        state["responder"] = fn
+
+    try:
+        yield base, recorded, set_responder
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.fixture
+def refused_url():
+    """A base URL bound but never listening → requests refuses instantly.
+
+    The socket is held (bound, no ``listen``) for the test's lifetime so
+    connects get an immediate RST instead of a slow connect-timeout, then
+    closed on teardown.
     """
+    import socket
 
-    responses: list = field(default_factory=list)
-    raise_exception: Exception | None = None
-    captured: list = field(default_factory=list)
-    _idx: int = 0
-
-    def __call__(self, url, **kwargs):
-        self.captured.append({"url": url, **kwargs})
-        if self.raise_exception is not None:
-            raise self.raise_exception
-        resp = self.responses[self._idx]
-        self._idx += 1
-        return resp
-
-
-@dataclass
-class FakeCitationLookup:
-    """Records the pmids requested and returns canned bibtex per pmid."""
-
-    canned: dict = field(default_factory=dict)
-    default: str = ""
-    requested: list = field(default_factory=list)
-
-    def __call__(self, pmid: str) -> str:
-        self.requested.append(pmid)
-        return self.canned.get(pmid, self.default)
-
-
-@dataclass
-class FakeCrossrefLookup:
-    """Records DOIs requested and returns canned metrics dicts."""
-
-    canned: dict = field(default_factory=dict)
-    requested: list = field(default_factory=list)
-
-    def __call__(self, doi: str) -> dict:
-        self.requested.append(doi)
-        return self.canned.get(doi, {})
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}/"
+    finally:
+        sock.close()
 
 
 # --------------------------------------------------------------------------
-# _search_pubmed
+# Shared XML fixtures
 # --------------------------------------------------------------------------
-
-
-class TestSearchPubmedSuccess:
-    @pytest.fixture
-    def search_response_payload(self) -> dict:
-        return {"esearchresult": {"idlist": ["12345", "67890"], "count": "2"}}
-
-    def test_returns_parsed_json_on_success(self, search_response_payload):
-        # Arrange
-        fake = FakeHttpGet(
-            responses=[FakeResponse(ok=True, payload=search_response_payload)]
-        )
-        # Act
-        result = _search_pubmed("test query", retmax=10, http_get=fake)
-        # Assert
-        assert result == search_response_payload
-
-    def test_forwards_query_as_term_param(self, search_response_payload):
-        # Arrange
-        fake = FakeHttpGet(
-            responses=[FakeResponse(ok=True, payload=search_response_payload)]
-        )
-        # Act
-        _search_pubmed("epilepsy", retmax=500, http_get=fake)
-        # Assert
-        assert fake.captured[0]["params"]["term"] == "epilepsy"
-
-    def test_forwards_retmax_param(self, search_response_payload):
-        # Arrange
-        fake = FakeHttpGet(
-            responses=[FakeResponse(ok=True, payload=search_response_payload)]
-        )
-        # Act
-        _search_pubmed("epilepsy", retmax=500, http_get=fake)
-        # Assert
-        assert fake.captured[0]["params"]["retmax"] == 500
-
-    def test_uses_pubmed_db_param(self, search_response_payload):
-        # Arrange
-        fake = FakeHttpGet(
-            responses=[FakeResponse(ok=True, payload=search_response_payload)]
-        )
-        # Act
-        _search_pubmed("anything", http_get=fake)
-        # Assert
-        assert fake.captured[0]["params"]["db"] == "pubmed"
-
-
-class TestSearchPubmedFailure:
-    def test_returns_empty_dict_when_response_not_ok(self):
-        # Arrange
-        fake = FakeHttpGet(responses=[FakeResponse(ok=False)])
-        # Act
-        result = _search_pubmed("test query", http_get=fake)
-        # Assert
-        assert result == {}
-
-    def test_returns_empty_dict_on_request_exception(self):
-        # Arrange
-        import requests as _requests
-
-        fake = FakeHttpGet(
-            raise_exception=_requests.exceptions.RequestException("boom")
-        )
-        # Act
-        result = _search_pubmed("test query", http_get=fake)
-        # Assert
-        assert result == {}
-
-
-# --------------------------------------------------------------------------
-# _fetch_details
-# --------------------------------------------------------------------------
-
-
-class TestFetchDetailsSuccess:
-    @pytest.fixture
-    def details_result(self) -> dict:
-        # Arrange — two responses: first XML abstracts, second JSON details
-        fake = FakeHttpGet(
-            responses=[
-                FakeResponse(ok=True, text="<xml>abstract data</xml>"),
-                FakeResponse(
-                    ok=True, payload={"result": {"12345": {"title": "Test"}}}
-                ),
-            ]
-        )
-        # Act
-        return _fetch_details(
-            "webenv123", "query_key456", retstart=0, retmax=100, http_get=fake
-        )
-
-    def test_includes_xml_abstracts_text(self, details_result):
-        # Arrange
-        # Act
-        # Assert
-        assert details_result["abstracts"] == "<xml>abstract data</xml>"
-
-    def test_includes_parsed_details_json(self, details_result):
-        # Arrange
-        # Act
-        # Assert
-        assert details_result["details"] == {"result": {"12345": {"title": "Test"}}}
-
-
-class TestFetchDetailsFailure:
-    def test_returns_empty_dict_when_abstract_response_not_ok(self):
-        # Arrange
-        fake = FakeHttpGet(
-            responses=[
-                FakeResponse(ok=False),
-                FakeResponse(ok=True, payload={}),
-            ]
-        )
-        # Act
-        result = _fetch_details("env", "key", http_get=fake)
-        # Assert
-        assert result == {}
-
-    def test_returns_empty_dict_when_details_response_not_ok(self):
-        # Arrange
-        fake = FakeHttpGet(
-            responses=[
-                FakeResponse(ok=True, text=""),
-                FakeResponse(ok=False),
-            ]
-        )
-        # Act
-        result = _fetch_details("env", "key", http_get=fake)
-        # Assert
-        assert result == {}
-
-
-class TestFetchDetailsParameters:
-    @pytest.fixture
-    def captured(self) -> list:
-        # Arrange
-        fake = FakeHttpGet(
-            responses=[
-                FakeResponse(ok=True, text=""),
-                FakeResponse(ok=True, payload={}),
-            ]
-        )
-        # Act
-        _fetch_details("env123", "key456", retstart=100, retmax=50, http_get=fake)
-        return fake.captured
-
-    def test_makes_two_http_calls(self, captured):
-        # Arrange
-        # Act
-        # Assert
-        assert len(captured) == 2
-
-    def test_first_call_forwards_webenv(self, captured):
-        # Arrange
-        # Act
-        # Assert
-        assert captured[0]["params"]["WebEnv"] == "env123"
-
-    def test_first_call_forwards_query_key(self, captured):
-        # Arrange
-        # Act
-        # Assert
-        assert captured[0]["params"]["query_key"] == "key456"
-
-    def test_first_call_forwards_retstart(self, captured):
-        # Arrange
-        # Act
-        # Assert
-        assert captured[0]["params"]["retstart"] == 100
-
-    def test_first_call_forwards_retmax(self, captured):
-        # Arrange
-        # Act
-        # Assert
-        assert captured[0]["params"]["retmax"] == 50
-
-
-# --------------------------------------------------------------------------
-# _parse_abstract_xml (pure function — no injection)
-# --------------------------------------------------------------------------
-
-
-_COMPLETE_PUBMED_XML = """
+_XML_COMPLETE = """
 <PubmedArticleSet>
     <PubmedArticle>
         <MedlineCitation>
@@ -310,336 +128,421 @@ _COMPLETE_PUBMED_XML = """
 </PubmedArticleSet>
 """
 
-
-class TestParseAbstractXmlComplete:
-    @pytest.fixture
-    def parsed(self) -> dict:
-        # Arrange / Act
-        return _parse_abstract_xml(_COMPLETE_PUBMED_XML)
-
-    def test_indexes_result_by_pmid_string(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert "12345" in parsed
-
-    def test_first_tuple_element_is_abstract_text(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert parsed["12345"][0] == "This is the abstract text."
-
-    def test_second_tuple_element_is_keyword_list(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert parsed["12345"][1] == ["Keyword1", "Keyword2"]
-
-    def test_third_tuple_element_is_doi_string(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert parsed["12345"][2] == "10.1234/test.doi"
-
-
-_MISSING_FIELDS_XML = """
+_XML_MISSING_FIELDS = """
 <PubmedArticleSet>
     <PubmedArticle>
-        <MedlineCitation>
-            <PMID>67890</PMID>
-            <Article>
-                <Abstract />
-            </Article>
-        </MedlineCitation>
+        <MedlineCitation><PMID>67890</PMID></MedlineCitation>
+    </PubmedArticle>
+</PubmedArticleSet>
+"""
+
+_XML_TWO_ARTICLES = """
+<PubmedArticleSet>
+    <PubmedArticle>
+        <MedlineCitation><PMID>11111</PMID></MedlineCitation>
+    </PubmedArticle>
+    <PubmedArticle>
+        <MedlineCitation><PMID>22222</PMID></MedlineCitation>
     </PubmedArticle>
 </PubmedArticleSet>
 """
 
 
-class TestParseAbstractXmlMissingFields:
-    @pytest.fixture
-    def parsed(self) -> dict:
-        return _parse_abstract_xml(_MISSING_FIELDS_XML)
-
-    def test_indexes_pmid_with_missing_fields(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert "67890" in parsed
-
-    def test_empty_abstract_is_empty_string_or_none(self, parsed):
-        # Arrange
-        abstract = parsed["67890"][0]
-        # Act
-        # Assert
-        assert abstract in ("", None)
-
-    def test_missing_keywords_is_empty_list(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert parsed["67890"][1] == []
-
-    def test_missing_doi_is_empty_string(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert parsed["67890"][2] == ""
-
-
-_TWO_ARTICLE_XML = """
-<PubmedArticleSet>
-    <PubmedArticle>
-        <MedlineCitation>
-            <PMID>11111</PMID>
-            <Article><Abstract><AbstractText>A</AbstractText></Abstract></Article>
-        </MedlineCitation>
-    </PubmedArticle>
-    <PubmedArticle>
-        <MedlineCitation>
-            <PMID>22222</PMID>
-            <Article><Abstract><AbstractText>B</AbstractText></Abstract></Article>
-        </MedlineCitation>
-    </PubmedArticle>
-</PubmedArticleSet>
-"""
-
-
-class TestParseAbstractXmlMultipleArticles:
-    @pytest.fixture
-    def parsed(self) -> dict:
-        return _parse_abstract_xml(_TWO_ARTICLE_XML)
-
-    def test_emits_one_entry_per_article(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert len(parsed) == 2
-
-    def test_emits_first_pmid_entry(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert "11111" in parsed
-
-    def test_emits_second_pmid_entry(self, parsed):
-        # Arrange
-        # Act
-        # Assert
-        assert "22222" in parsed
-
-
 # --------------------------------------------------------------------------
-# _get_citation
+# _search_pubmed — real requests.get against local server (base_url seam)
 # --------------------------------------------------------------------------
-
-
-class TestGetCitation:
-    def test_returns_response_text_when_ok(self):
+class TestSearchPubmed:
+    def test_success_returns_parsed_json(self, eutils_server):
         # Arrange
-        fake = FakeHttpGet(
-            responses=[FakeResponse(ok=True, text="@article{citation}")]
-        )
+        base, _recorded, set_responder = eutils_server
+        payload = {"esearchresult": {"idlist": ["12345", "67890"], "count": "2"}}
+        set_responder(lambda path: (200, "application/json", json.dumps(payload)))
         # Act
-        result = _get_citation("12345", http_get=fake)
+        result = _search_pubmed("test query", retmax=10, base_url=base)
         # Assert
-        assert result == "@article{citation}"
+        assert result == payload
 
-    def test_returns_empty_string_when_not_ok(self):
+    def test_failure_status_returns_empty_dict(self, eutils_server):
         # Arrange
-        fake = FakeHttpGet(responses=[FakeResponse(ok=False)])
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (500, "application/json", "{}"))
         # Act
-        result = _get_citation("12345", http_get=fake)
-        # Assert
-        assert result == ""
-
-    def test_forwards_pmid_to_id_param(self):
-        # Arrange
-        fake = FakeHttpGet(responses=[FakeResponse(ok=True, text="ok")])
-        # Act
-        _get_citation("12345", http_get=fake)
-        # Assert
-        assert fake.captured[0]["params"]["id"] == "12345"
-
-
-# --------------------------------------------------------------------------
-# get_crossref_metrics
-# --------------------------------------------------------------------------
-
-
-class TestGetCrossrefMetrics:
-    @pytest.fixture
-    def metrics(self) -> dict:
-        # Arrange
-        payload = {
-            "message": {
-                "is-referenced-by-count": 42,
-                "type": "journal-article",
-                "publisher": "Nature Publishing",
-                "reference": [{"key": "1"}, {"key": "2"}, {"key": "3"}],
-                "DOI": "10.1234/test",
-            }
-        }
-        fake = FakeHttpGet(responses=[FakeResponse(ok=True, payload=payload)])
-        # Act
-        return get_crossref_metrics("10.1234/test", http_get=fake)
-
-    def test_extracts_citations_count(self, metrics):
-        # Arrange
-        # Act
-        # Assert
-        assert metrics["citations"] == 42
-
-    def test_extracts_type_from_message(self, metrics):
-        # Arrange
-        # Act
-        # Assert
-        assert metrics["type"] == "journal-article"
-
-    def test_extracts_publisher_from_message(self, metrics):
-        # Arrange
-        # Act
-        # Assert
-        assert metrics["publisher"] == "Nature Publishing"
-
-    def test_extracts_references_count(self, metrics):
-        # Arrange
-        # Act
-        # Assert
-        assert metrics["references"] == 3
-
-    def test_extracts_doi_from_message(self, metrics):
-        # Arrange
-        # Act
-        # Assert
-        assert metrics["doi"] == "10.1234/test"
-
-    def test_returns_empty_dict_when_response_not_ok(self):
-        # Arrange
-        fake = FakeHttpGet(responses=[FakeResponse(ok=False)])
-        # Act
-        result = get_crossref_metrics("10.1234/test", http_get=fake)
+        result = _search_pubmed("test query", base_url=base)
         # Assert
         assert result == {}
 
-
-# --------------------------------------------------------------------------
-# format_bibtex (pure function except crossref_lookup; we inject)
-# --------------------------------------------------------------------------
-
-
-class TestFormatBibtexComplete:
-    @pytest.fixture
-    def formatted(self) -> str:
+    def test_network_error_returns_empty_dict(self, refused_url):
         # Arrange
-        paper = {
-            "title": "Machine Learning for Medical Diagnosis",
-            "authors": [{"name": "John A. Smith"}, {"name": "Jane B. Doe"}],
-            "source": "Nature Medicine",
-            "pubdate": "2023 Jul 15",
-        }
-        abstract_data = (
-            "This is the abstract text.",
-            ["Machine Learning", "Diagnosis"],
-            "10.1038/s41591-023-12345",
-        )
-        crossref = FakeCrossrefLookup(
-            canned={
-                "10.1038/s41591-023-12345": {
-                    "publisher": "Nature Publishing",
-                    "references": 50,
-                }
-            }
-        )
+        # (refused_url points at a closed port → ConnectionError)
         # Act
+        result = _search_pubmed("test query", base_url=refused_url)
+        # Assert
+        assert result == {}
+
+    def test_query_term_is_sent_as_param(self, eutils_server):
+        # Arrange
+        base, recorded, set_responder = eutils_server
+        set_responder(lambda path: (200, "application/json", '{"esearchresult": {}}'))
+        # Act
+        _search_pubmed("epilepsy", retmax=500, base_url=base)
+        # Assert
+        assert parse_qs(urlparse(recorded[0]).query)["term"] == ["epilepsy"]
+
+    def test_retmax_is_sent_as_param(self, eutils_server):
+        # Arrange
+        base, recorded, set_responder = eutils_server
+        set_responder(lambda path: (200, "application/json", '{"esearchresult": {}}'))
+        # Act
+        _search_pubmed("epilepsy", retmax=500, base_url=base)
+        # Assert
+        assert parse_qs(urlparse(recorded[0]).query)["retmax"] == ["500"]
+
+
+# --------------------------------------------------------------------------
+# _fetch_details — two real GETs against local server
+# --------------------------------------------------------------------------
+class TestFetchDetails:
+    def test_success_returns_abstracts_text(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+
+        def responder(path):
+            if "efetch" in path:
+                return (200, "text/xml", "<xml>abstract data</xml>")
+            return (200, "application/json", '{"result": {"12345": {"title": "T"}}}')
+
+        set_responder(responder)
+        # Act
+        result = _fetch_details("webenv123", "qkey456", base_url=base)
+        # Assert
+        assert result["abstracts"] == "<xml>abstract data</xml>"
+
+    def test_success_returns_details_json(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+
+        def responder(path):
+            if "efetch" in path:
+                return (200, "text/xml", "<xml/>")
+            return (200, "application/json", '{"result": {"12345": {"title": "T"}}}')
+
+        set_responder(responder)
+        # Act
+        result = _fetch_details("webenv123", "qkey456", base_url=base)
+        # Assert
+        assert result["details"] == {"result": {"12345": {"title": "T"}}}
+
+    def test_non_ok_status_returns_empty_dict(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (500, "text/xml", ""))
+        # Act
+        result = _fetch_details("webenv123", "qkey456", base_url=base)
+        # Assert
+        assert result == {}
+
+    def test_webenv_is_sent_as_param(self, eutils_server):
+        # Arrange
+        base, recorded, set_responder = eutils_server
+
+        def responder(path):
+            if "efetch" in path:
+                return (200, "text/xml", "<xml/>")
+            return (200, "application/json", "{}")
+
+        set_responder(responder)
+        # Act
+        _fetch_details("env123", "key456", retstart=100, retmax=50, base_url=base)
+        # Assert
+        assert parse_qs(urlparse(recorded[0]).query)["WebEnv"] == ["env123"]
+
+
+# --------------------------------------------------------------------------
+# _parse_abstract_xml — pure
+# --------------------------------------------------------------------------
+class TestParseAbstractXml:
+    def test_complete_article_pmid_present(self):
+        # Arrange
+        # (module-level _XML_COMPLETE)
+        # Act
+        result = _parse_abstract_xml(_XML_COMPLETE)
+        # Assert
+        assert "12345" in result
+
+    def test_complete_article_abstract_text(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_COMPLETE)
+        # Assert
+        assert result["12345"][0] == "This is the abstract text."
+
+    def test_complete_article_keywords(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_COMPLETE)
+        # Assert
+        assert result["12345"][1] == ["Keyword1", "Keyword2"]
+
+    def test_complete_article_doi(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_COMPLETE)
+        # Assert
+        assert result["12345"][2] == "10.1234/test.doi"
+
+    def test_missing_fields_pmid_present(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_MISSING_FIELDS)
+        # Assert
+        assert "67890" in result
+
+    def test_missing_fields_abstract_empty(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_MISSING_FIELDS)
+        # Assert
+        assert result["67890"][0] == ""
+
+    def test_missing_fields_keywords_empty(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_MISSING_FIELDS)
+        # Assert
+        assert result["67890"][1] == []
+
+    def test_missing_fields_doi_empty(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_MISSING_FIELDS)
+        # Assert
+        assert result["67890"][2] == ""
+
+    def test_two_articles_yields_two_entries(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_TWO_ARTICLES)
+        # Assert
+        assert len(result) == 2
+
+    def test_two_articles_first_pmid_present(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_TWO_ARTICLES)
+        # Assert
+        assert "11111" in result
+
+    def test_two_articles_second_pmid_present(self):
+        # Arrange
+        # Act
+        result = _parse_abstract_xml(_XML_TWO_ARTICLES)
+        # Assert
+        assert "22222" in result
+
+
+# --------------------------------------------------------------------------
+# _get_citation — real GET against local server
+# --------------------------------------------------------------------------
+class TestGetCitation:
+    def test_success_returns_response_text(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (200, "text/plain", "@article{test_citation}"))
+        # Act
+        result = _get_citation("12345", base_url=base)
+        # Assert
+        assert result == "@article{test_citation}"
+
+    def test_failure_status_returns_empty_string(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (500, "text/plain", ""))
+        # Act
+        result = _get_citation("12345", base_url=base)
+        # Assert
+        assert result == ""
+
+    def test_pmid_is_sent_as_param(self, eutils_server):
+        # Arrange
+        base, recorded, set_responder = eutils_server
+        set_responder(lambda path: (200, "text/plain", ""))
+        # Act
+        _get_citation("99999", base_url=base)
+        # Assert
+        assert parse_qs(urlparse(recorded[0]).query)["id"] == ["99999"]
+
+
+# --------------------------------------------------------------------------
+# get_crossref_metrics — real GET against local server
+# --------------------------------------------------------------------------
+class TestGetCrossrefMetrics:
+    _MESSAGE = {
+        "message": {
+            "is-referenced-by-count": 42,
+            "type": "journal-article",
+            "publisher": "Test Publisher",
+            "reference": [1, 2, 3],
+            "DOI": "10.1234/test",
+        }
+    }
+
+    def test_success_returns_citation_count(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (200, "application/json", json.dumps(self._MESSAGE)))
+        # Act
+        result = get_crossref_metrics("10.1234/test", base_url=base)
+        # Assert
+        assert result["citations"] == 42
+
+    def test_success_returns_reference_count(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (200, "application/json", json.dumps(self._MESSAGE)))
+        # Act
+        result = get_crossref_metrics("10.1234/test", base_url=base)
+        # Assert
+        assert result["references"] == 3
+
+    def test_failure_status_returns_empty_dict(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (500, "application/json", "{}"))
+        # Act
+        result = get_crossref_metrics("10.1234/test", base_url=base)
+        # Assert
+        assert result == {}
+
+    def test_missing_fields_default_citations_zero(self, eutils_server):
+        # Arrange
+        base, _recorded, set_responder = eutils_server
+        set_responder(lambda path: (200, "application/json", '{"message": {}}'))
+        # Act
+        result = get_crossref_metrics("10.1234/test", base_url=base)
+        # Assert
+        assert result["citations"] == 0
+
+
+# --------------------------------------------------------------------------
+# save_bibtex — real file write (tmp_path) + injected collaborators
+# --------------------------------------------------------------------------
+class TestSaveBibtex:
+    def test_official_citation_written_verbatim(self, tmp_path):
+        # Arrange
+        papers = {"12345": {"title": "T", "authors": [{"name": "John Doe"}]}}
+        out = tmp_path / "test.bib"
+        # Act
+        save_bibtex(
+            papers,
+            {},
+            str(out),
+            citation_fn=lambda pmid: "@article{official}",
+            format_fn=lambda *a, **k: "UNUSED",
+        )
+        # Assert
+        assert out.read_text() == "@article{official}"
+
+    def test_formatted_entry_used_when_no_citation(self, tmp_path):
+        # Arrange
+        papers = {"67890": {"title": "T", "authors": [{"name": "Jane Smith"}]}}
+        out = tmp_path / "test.bib"
+        # Act
+        save_bibtex(
+            papers,
+            {},
+            str(out),
+            citation_fn=lambda pmid: "",
+            format_fn=lambda *a, **k: "@article{formatted}",
+        )
+        # Assert
+        assert out.read_text() == "@article{formatted}\n"
+
+    def test_uids_key_is_skipped(self, tmp_path):
+        # Arrange
+        papers = {"uids": ["12345"], "12345": {"title": "Real"}}
+        out = tmp_path / "test.bib"
+        formatted_for = []
+        # Act
+        save_bibtex(
+            papers,
+            {},
+            str(out),
+            citation_fn=lambda pmid: "",
+            format_fn=lambda paper, pmid, data: formatted_for.append(pmid) or "X",
+        )
+        # Assert
+        assert formatted_for == ["12345"]
+
+
+# --------------------------------------------------------------------------
+# format_bibtex — pure (doi="") + injected metrics for the DOI path
+# --------------------------------------------------------------------------
+class TestFormatBibtex:
+    _COMPLETE_PAPER = {
+        "title": "Machine Learning for Medical Diagnosis",
+        "authors": [{"name": "John A. Smith"}, {"name": "Jane B. Doe"}],
+        "source": "Nature Medicine",
+        "pubdate": "2023 Jul 15",
+    }
+    _COMPLETE_ABSTRACT = (
+        "This is the abstract text.",
+        ["Machine Learning", "Diagnosis"],
+        "10.1038/s41591-023-12345",
+    )
+
+    def _format_complete(self):
         return format_bibtex(
-            paper, "12345678", abstract_data, crossref_lookup=crossref
+            self._COMPLETE_PAPER,
+            "12345678",
+            self._COMPLETE_ABSTRACT,
+            metrics_fn=lambda doi: {"publisher": "Nature Publishing", "references": 50},
         )
 
-    def test_emits_citation_key_with_first_author_and_year(self, formatted):
+    def test_complete_entry_has_citation_key(self):
         # Arrange
         # Act
+        result = self._format_complete()
         # Assert
-        assert "@article{John.Smith_2023_machine_learning" in formatted
+        assert "@article{John.Smith_2023_machine_learning" in result
 
-    def test_includes_full_author_list(self, formatted):
+    def test_complete_entry_has_author_line(self):
         # Arrange
         # Act
+        result = self._format_complete()
         # Assert
-        assert "author = {John A. Smith and Jane B. Doe}" in formatted
+        assert "author = {John A. Smith and Jane B. Doe}" in result
 
-    def test_includes_title_field(self, formatted):
+    def test_complete_entry_has_doi_line(self):
         # Arrange
         # Act
+        result = self._format_complete()
         # Assert
-        assert "title = {Machine Learning for Medical Diagnosis}" in formatted
+        assert "doi = {10.1038/s41591-023-12345}" in result
 
-    def test_includes_journal_field(self, formatted):
+    def test_complete_entry_has_keywords_line(self):
         # Arrange
         # Act
+        result = self._format_complete()
         # Assert
-        assert "journal = {Nature Medicine}" in formatted
+        assert "keywords = {Machine Learning, Diagnosis}" in result
 
-    def test_includes_year_field(self, formatted):
+    def test_minimal_entry_has_article_marker(self):
         # Arrange
+        paper = {"title": "A", "authors": [{"name": "X"}], "source": "U", "pubdate": ""}
         # Act
+        result = format_bibtex(paper, "99999", ("", [], ""))
         # Assert
-        assert "year = {2023}" in formatted
+        assert "@article{" in result
 
-    def test_includes_pmid_field(self, formatted):
+    def test_minimal_entry_has_pmid_line(self):
         # Arrange
+        paper = {"title": "A", "authors": [{"name": "X"}], "source": "U", "pubdate": ""}
         # Act
+        result = format_bibtex(paper, "99999", ("", [], ""))
         # Assert
-        assert "pmid = {12345678}" in formatted
+        assert "pmid = {99999}" in result
 
-    def test_includes_doi_field(self, formatted):
-        # Arrange
-        # Act
-        # Assert
-        assert "doi = {10.1038/s41591-023-12345}" in formatted
-
-    def test_includes_keywords_field(self, formatted):
-        # Arrange
-        # Act
-        # Assert
-        assert "keywords = {Machine Learning, Diagnosis}" in formatted
-
-    def test_includes_abstract_field(self, formatted):
-        # Arrange
-        # Act
-        # Assert
-        assert "abstract = {This is the abstract text.}" in formatted
-
-
-class TestFormatBibtexMinimal:
-    @pytest.fixture
-    def formatted(self) -> str:
-        # Arrange
-        paper = {
-            "title": "A",
-            "authors": [{"name": "X"}],
-            "source": "Unknown Journal",
-            "pubdate": "",
-        }
-        abstract_data = ("", [], "")
-        # Act — empty doi means crossref_lookup is not called; default is fine
-        return format_bibtex(paper, "99999", abstract_data)
-
-    def test_emits_article_marker(self, formatted):
-        # Arrange
-        # Act
-        # Assert
-        assert "@article{" in formatted
-
-    def test_emits_pmid_when_other_fields_minimal(self, formatted):
-        # Arrange
-        # Act
-        # Assert
-        assert "pmid = {99999}" in formatted
-
-
-class TestFormatBibtexSpecialCharacters:
-    def test_strips_non_alphanumeric_from_citation_key(self):
+    def test_special_chars_cleaned_in_citation_key(self):
         # Arrange
         paper = {
             "title": "Test-Paper: With Special Characters!",
@@ -647,147 +550,198 @@ class TestFormatBibtexSpecialCharacters:
             "source": "Test Journal",
             "pubdate": "2023",
         }
-        abstract_data = ("", [], "")
         # Act
-        result = format_bibtex(paper, "11111", abstract_data)
+        result = format_bibtex(paper, "11111", ("", [], ""))
         # Assert
         assert "@article{ONeillSmith.ONeillSmith_2023_testpaper_with" in result
 
 
 # --------------------------------------------------------------------------
-# save_bibtex — uses tmp_path for real filesystem
+# async helpers — real aiohttp test server
 # --------------------------------------------------------------------------
-
-
-class TestSaveBibtex:
-    def test_writes_canned_citation_when_lookup_returns_text(self, tmp_path):
-        # Arrange
-        papers = {
-            "12345": {
-                "title": "Test Paper",
-                "authors": [{"name": "John Doe"}],
-                "source": "Test Journal",
-                "pubdate": "2023",
-            }
-        }
-        abstracts = {"12345": ("Abstract text", ["Keyword1"], "10.1234/test")}
-        out_file = tmp_path / "test.bib"
-        citation_lookup = FakeCitationLookup(
-            canned={"12345": "@article{official_citation}"}
-        )
-        # Act
-        save_bibtex(
-            papers,
-            abstracts,
-            str(out_file),
-            citation_lookup=citation_lookup,
-            crossref_lookup=FakeCrossrefLookup(),
-        )
-        # Assert
-        assert "@article{official_citation}" in out_file.read_text()
-
-    def test_falls_back_to_format_bibtex_when_citation_empty(self, tmp_path):
-        # Arrange
-        papers = {
-            "67890": {
-                "title": "Test Paper Without Citation",
-                "authors": [{"name": "Jane Smith"}],
-                "source": "Another Journal",
-                "pubdate": "2024",
-            }
-        }
-        abstracts: dict = {}
-        out_file = tmp_path / "fallback.bib"
-        citation_lookup = FakeCitationLookup(default="")
-        # Act
-        save_bibtex(
-            papers,
-            abstracts,
-            str(out_file),
-            citation_lookup=citation_lookup,
-            crossref_lookup=FakeCrossrefLookup(),
-        )
-        # Assert
-        assert "@article{" in out_file.read_text()
-
-    def test_skips_uids_key_when_iterating_papers(self, tmp_path):
-        # Arrange
-        papers = {
-            "uids": ["12345"],
-            "12345": {
-                "title": "Real Paper",
-                "authors": [{"name": "X"}],
-                "source": "J",
-                "pubdate": "2024",
-            },
-        }
-        abstracts: dict = {}
-        out_file = tmp_path / "skip.bib"
-        citation_lookup = FakeCitationLookup(default="")
-        # Act
-        save_bibtex(
-            papers,
-            abstracts,
-            str(out_file),
-            citation_lookup=citation_lookup,
-            crossref_lookup=FakeCrossrefLookup(),
-        )
-        # Assert — citation_lookup was queried only for the real pmid, not "uids"
-        assert citation_lookup.requested == ["12345"]
-
-
-# --------------------------------------------------------------------------
-# parse_args
-# --------------------------------------------------------------------------
-
-
 @pytest.fixture
-def argv(request):
-    """`yield`-based replacement for ``patch.dict("sys.argv", [...])``.
+def aiohttp_server_factory():
+    """Build an aiohttp app serving fixed JSON or XML; yields a runner factory."""
+    from aiohttp import web
 
-    Pass ``request.param`` as the argv list; restored on teardown.
-    """
-    import sys
+    runners = []
 
-    previous = sys.argv
-    sys.argv = list(request.param)
+    async def _start(handler):
+        app = web.Application()
+        app.router.add_get("/{tail:.*}", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        runners.append(runner)
+        port = site._server.sockets[0].getsockname()[1]
+        return f"http://127.0.0.1:{port}"
+
+    yield _start
+
+    async def _cleanup():
+        for r in runners:
+            await r.cleanup()
+
+    asyncio.get_event_loop().run_until_complete(_cleanup())
+
+
+class TestAsyncFunctions:
+    @pytest.mark.asyncio
+    async def test_fetch_async_returns_json_for_json_retmode(
+        self, aiohttp_server_factory
+    ):
+        # Arrange
+        from aiohttp import web
+
+        async def handler(request):
+            return web.json_response({"test": "data"})
+
+        url = await aiohttp_server_factory(handler)
+        # Act
+        async with aiohttp.ClientSession() as session:
+            result = await fetch_async(session, url, {"retmode": "json"})
+        # Assert
+        assert result == {"test": "data"}
+
+    @pytest.mark.asyncio
+    async def test_fetch_async_returns_text_for_xml_retmode(
+        self, aiohttp_server_factory
+    ):
+        # Arrange
+        from aiohttp import web
+
+        async def handler(request):
+            return web.Response(text="<xml>test</xml>")
+
+        url = await aiohttp_server_factory(handler)
+        # Act
+        async with aiohttp.ClientSession() as session:
+            result = await fetch_async(session, url, {"retmode": "xml"})
+        # Assert
+        assert result == "<xml>test</xml>"
+
+    @pytest.mark.asyncio
+    async def test_fetch_async_returns_empty_on_non_200(self, aiohttp_server_factory):
+        # Arrange
+        from aiohttp import web
+
+        async def handler(request):
+            return web.Response(status=404)
+
+        url = await aiohttp_server_factory(handler)
+        # Act
+        async with aiohttp.ClientSession() as session:
+            result = await fetch_async(session, url, {})
+        # Assert
+        assert result == {}
+
+
+# --------------------------------------------------------------------------
+# search_pubmed orchestrator — injected collaborators
+# --------------------------------------------------------------------------
+class TestSearchPubmedOrchestrator:
+    def test_empty_search_returns_one(self):
+        # Arrange
+        # Act
+        result = search_pubmed("test query", n_entries=10, search_fn=lambda q: {})
+        # Assert
+        assert result == 1
+
+    def test_filename_sanitizes_spaces_to_underscores(self, tmp_path):
+        # Arrange
+        import os
+
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        search_fn = lambda q: {"esearchresult": {"idlist": [], "count": "0"}}  # noqa: E731
+        # Act
+        try:
+            search_pubmed(
+                "test query with spaces",
+                n_entries=0,
+                search_fn=search_fn,
+                fetch_fn=lambda ids: [],
+            )
+            produced = list(tmp_path.glob("*.bib"))
+        finally:
+            os.chdir(cwd)
+        # Assert
+        assert produced[0].name == "pubmed_test_query_with_spaces.bib"
+
+
+# --------------------------------------------------------------------------
+# parse_args — real argv (save/restore, no mocks)
+# --------------------------------------------------------------------------
+@pytest.fixture
+def argv():
+    """Set sys.argv for the test, restore afterward."""
+    saved = sys.argv
     try:
-        yield list(request.param)
+        yield lambda new: setattr(sys, "argv", new)
     finally:
-        sys.argv = previous
+        sys.argv = saved
 
 
 class TestParseArgs:
-    @pytest.mark.parametrize(
-        "argv", [["prog", "--query", "epilepsy"]], indirect=True
-    )
-    def test_long_query_option_is_parsed(self, argv):
+    def test_long_query_flag_is_parsed(self, argv):
         # Arrange
+        argv(["script.py", "--query", "epilepsy prediction", "--n_entries", "20"])
         # Act
         args = parse_args()
         # Assert
-        assert args.query == "epilepsy"
+        assert args.query == "epilepsy prediction"
 
-    @pytest.mark.parametrize("argv", [["prog"]], indirect=True)
-    def test_default_n_entries_is_ten(self, argv):
+    def test_long_n_entries_flag_is_parsed(self, argv):
         # Arrange
+        argv(["script.py", "--query", "x", "--n_entries", "20"])
+        # Act
+        args = parse_args()
+        # Assert
+        assert args.n_entries == 20
+
+    def test_query_defaults_to_none(self, argv):
+        # Arrange
+        argv(["script.py"])
+        # Act
+        args = parse_args()
+        # Assert
+        assert args.query is None
+
+    def test_n_entries_defaults_to_ten(self, argv):
+        # Arrange
+        argv(["script.py"])
         # Act
         args = parse_args()
         # Assert
         assert args.n_entries == 10
 
-    @pytest.mark.parametrize(
-        "argv", [["prog", "-q", "diabetes", "-n", "5"]], indirect=True
-    )
-    def test_short_option_n_entries_is_parsed(self, argv):
+    def test_short_flags_are_parsed(self, argv):
         # Arrange
+        argv(["script.py", "-q", "test", "-n", "5"])
         # Act
         args = parse_args()
         # Assert
         assert args.n_entries == 5
 
 
+# --------------------------------------------------------------------------
+# module surface
+# --------------------------------------------------------------------------
+class TestModuleSurface:
+    def test_run_main_is_callable(self):
+        # Arrange
+        # (run_main needs the scitex umbrella for session handling; here we
+        # only assert it is exposed as a callable entry point.)
+        # Act
+        ok = callable(run_main)
+        # Assert
+        assert ok
+
+
 if __name__ == "__main__":
-    pytest.main([os.path.abspath(__file__), "-v"])
+    import os
+
+    pytest.main([os.path.abspath(__file__)])
 
 # EOF

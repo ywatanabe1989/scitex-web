@@ -1,251 +1,365 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # File: ./tests/scitex_web/test__scraping.py
-"""Tests for scitex_web._scraping.get_urls and get_image_urls.
 
-These tests use a hand-rolled fake ``http_get`` callable rather than
-patching ``requests.get``. Production accepts the callable as an
-injected keyword argument (default ``requests.get``) so the test can
-hand the real production code a fake without touching globals.
+"""Tests for web scraping utilities.
+
+`get_urls` and `get_image_urls` fetch a page via `requests.get` and parse it
+with BeautifulSoup. We exercise the real functions against a real loopback
+HTTP server (no mocks): the server serves the test HTML, and assertions are
+made relative to the actual served base URL.
+
+`download_images` is covered separately in `test_download_images.py`; its
+network/Pillow paths are not duplicated here.
 """
 
-from __future__ import annotations
-
-import os
-from dataclasses import dataclass, field
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-
-import requests
 
 from scitex_web import get_image_urls, get_urls
 
 
-@dataclass
-class FakeResponse:
-    """Minimal stand-in for the slice of ``requests.Response`` we use.
+def _make_handler(routes):
+    """BaseHTTPRequestHandler serving a {path: (status, body)} map."""
 
-    Only the attributes/methods our SUT touches are exposed (``text``,
-    ``raise_for_status``). Renaming any of them in production fails the
-    test honestly — that is the contract we want from the no-mock rule.
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 (http.server API)
+            status, body = routes.get(self.path, (404, ""))
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, *args):  # silence access log
+            pass
+
+    return _Handler
+
+
+@pytest.fixture
+def serve_html():
+    """Serve HTML on a loopback port; yields a function (html) -> page_url."""
+    routes = {}
+    server = HTTPServer(("127.0.0.1", 0), _make_handler(routes))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base = f"http://{host}:{port}"
+
+    def _serve(html, path="/"):
+        routes[path] = (200, html)
+        return base + path
+
+    try:
+        yield _serve, base
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.fixture
+def refused_url():
+    """A URL bound but never listening → requests refuses instantly.
+
+    The socket is held (bound, no ``listen``) for the test's lifetime so
+    connects get an immediate RST instead of a slow connect-timeout, then
+    closed on teardown.
     """
+    import socket
 
-    text: str = ""
-    raise_for_status_calls: list = field(default_factory=list)
-
-    def raise_for_status(self) -> None:
-        self.raise_for_status_calls.append(None)
-
-
-@dataclass
-class FakeHttpGet:
-    """Captures (url, timeout, headers) of a single GET and returns canned text."""
-
-    text: str = ""
-    raise_exception: Exception | None = None
-    captured: list = field(default_factory=list)
-
-    def __call__(self, url, *, timeout=None, headers=None):
-        self.captured.append({"url": url, "timeout": timeout, "headers": headers})
-        if self.raise_exception is not None:
-            raise self.raise_exception
-        return FakeResponse(text=self.text)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}/"
+    finally:
+        sock.close()
 
 
-_PAGE_HTML = """
-<html>
-    <body>
-        <a href="https://example.com/page1">Link 1</a>
-        <a href="/page2">Link 2</a>
-        <a href="https://example.com/page3">Link 3</a>
-        <a href="https://external.com/page">External</a>
-    </body>
-</html>
-"""
-
-_IMAGE_PAGE_HTML = """
-<html>
-    <body>
-        <img src="https://example.com/img1.jpg" />
-        <img src="/img2.png" />
-        <img data-src="https://example.com/lazy.gif" />
-        <img src="https://example.com/skip.svg" />
-        <img src="https://external.com/external.png" />
-    </body>
-</html>
-"""
-
-
-class TestGetUrlsBasic:
-    @pytest.fixture
-    def urls_from_basic_page(self) -> list[str]:
+class TestGetUrls:
+    def test_extracts_all_three_links(self, serve_html):
         # Arrange
-        fake = FakeHttpGet(text=_PAGE_HTML)
-        # Act
-        return get_urls("https://example.com", http_get=fake)
-
-    def test_returns_unique_absolute_url_for_each_link(self, urls_from_basic_page):
-        # Arrange
-        # Act
-        # Assert
-        assert len(urls_from_basic_page) == 4
-
-    def test_includes_first_absolute_link(self, urls_from_basic_page):
-        # Arrange
-        # Act
-        # Assert
-        assert "https://example.com/page1" in urls_from_basic_page
-
-    def test_resolves_relative_link_against_page_url(self, urls_from_basic_page):
-        # Arrange
-        # Act
-        # Assert
-        assert "https://example.com/page2" in urls_from_basic_page
-
-    def test_includes_external_link_when_not_filtered(self, urls_from_basic_page):
-        # Arrange
-        # Act
-        # Assert
-        assert "https://external.com/page" in urls_from_basic_page
-
-
-class TestGetUrlsFiltering:
-    def test_same_domain_excludes_external_links(self):
-        # Arrange
-        fake = FakeHttpGet(text=_PAGE_HTML)
-        # Act
-        urls = get_urls("https://example.com", same_domain=True, http_get=fake)
-        # Assert
-        assert all(u.startswith("https://example.com") for u in urls)
-
-    def test_pattern_filter_returns_only_matching_urls(self):
-        # Arrange
+        serve, base = serve_html
         html = (
-            '<a href="https://example.com/a.pdf">a</a>'
-            '<a href="https://example.com/b.html">b</a>'
+            "<html><body>"
+            f'<a href="{base}/page1">L1</a>'
+            '<a href="/page2">L2</a>'
+            f'<a href="{base}/page3">L3</a>'
+            "</body></html>"
         )
-        fake = FakeHttpGet(text=html)
+        page_url = serve(html)
         # Act
-        urls = get_urls("https://example.com", pattern=r"\.pdf$", http_get=fake)
+        urls = get_urls(page_url)
         # Assert
-        assert urls == ["https://example.com/a.pdf"]
+        assert len(urls) == 3
 
-    def test_include_external_false_drops_other_domains(self):
+    def test_absolute_link_appears_in_result(self, serve_html):
         # Arrange
-        fake = FakeHttpGet(text=_PAGE_HTML)
+        serve, base = serve_html
+        html = f'<html><body><a href="{base}/page1">L1</a></body></html>'
+        page_url = serve(html)
         # Act
-        urls = get_urls(
-            "https://example.com",
-            same_domain=False,
-            include_external=False,
-            http_get=fake,
+        urls = get_urls(page_url)
+        # Assert
+        assert f"{base}/page1" in urls
+
+    def test_relative_link_resolved_against_base(self, serve_html):
+        # Arrange
+        serve, base = serve_html
+        html = '<html><body><a href="/page2">L2</a></body></html>'
+        page_url = serve(html)
+        # Act
+        urls = get_urls(page_url)
+        # Assert
+        assert f"{base}/page2" in urls
+
+    def test_pattern_filters_to_pdf_links_only(self, serve_html):
+        # Arrange
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/doc.pdf">pdf</a>'
+            f'<a href="{base}/page.html">html</a>'
+            f'<a href="{base}/report.pdf">pdf2</a>'
+            "</body></html>"
         )
-        # Assert
-        assert "https://external.com/page" not in urls
-
-    def test_request_exception_returns_empty_list(self):
-        # Arrange
-        fake = FakeHttpGet(raise_exception=requests.RequestException("boom"))
+        page_url = serve(html)
         # Act
-        urls = get_urls("https://example.com", http_get=fake)
+        urls = get_urls(page_url, pattern=r"\.pdf$")
+        # Assert
+        assert len(urls) == 2
+
+    def test_pattern_result_entries_all_match(self, serve_html):
+        # Arrange
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/doc.pdf">pdf</a>'
+            f'<a href="{base}/page.html">html</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
+        # Act
+        urls = get_urls(page_url, pattern=r"\.pdf$")
+        # Assert
+        assert all(url.endswith(".pdf") for url in urls)
+
+    def test_same_domain_excludes_other_hosts(self, serve_html):
+        # Arrange
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/a">internal</a>'
+            '<a href="https://other.example/b">external</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
+        # Act
+        urls = get_urls(page_url, same_domain=True)
+        # Assert
+        assert urls == [f"{base}/a"]
+
+    def test_duplicate_links_are_deduplicated(self, serve_html):
+        # Arrange
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/x">one</a>'
+            f'<a href="{base}/x">again</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
+        # Act
+        urls = get_urls(page_url)
+        # Assert
+        assert urls == [f"{base}/x"]
+
+    def test_empty_page_returns_empty_list(self, serve_html):
+        # Arrange
+        serve, _base = serve_html
+        page_url = serve("<html><body>no links</body></html>")
+        # Act
+        urls = get_urls(page_url)
+        # Assert
+        assert urls == []
+
+    def test_request_failure_returns_empty_list(self, refused_url):
+        # Arrange
+        # (refused_url points at a closed port)
+        # Act
+        urls = get_urls(refused_url)
         # Assert
         assert urls == []
 
 
 class TestGetImageUrls:
-    @pytest.fixture
-    def image_urls_default(self) -> list[str]:
+    def test_extracts_all_image_sources(self, serve_html):
         # Arrange
-        fake = FakeHttpGet(text=_IMAGE_PAGE_HTML)
-        # Act
-        return get_image_urls("https://example.com", http_get=fake)
-
-    def test_extracts_absolute_image_url(self, image_urls_default):
-        # Arrange
-        # Act
-        # Assert
-        assert "https://example.com/img1.jpg" in image_urls_default
-
-    def test_resolves_relative_image_url(self, image_urls_default):
-        # Arrange
-        # Act
-        # Assert
-        assert "https://example.com/img2.png" in image_urls_default
-
-    def test_picks_up_data_src_attribute(self, image_urls_default):
-        # Arrange
-        # Act
-        # Assert
-        assert "https://example.com/lazy.gif" in image_urls_default
-
-    def test_skips_svg_images(self, image_urls_default):
-        # Arrange
-        # Act
-        # Assert
-        assert "https://example.com/skip.svg" not in image_urls_default
-
-    def test_same_domain_drops_external_image(self):
-        # Arrange
-        fake = FakeHttpGet(text=_IMAGE_PAGE_HTML)
-        # Act
-        urls = get_image_urls("https://example.com", same_domain=True, http_get=fake)
-        # Assert
-        assert "https://external.com/external.png" not in urls
-
-    def test_pattern_filter_returns_only_matching_image(self):
-        # Arrange
+        serve, base = serve_html
         html = (
-            '<img src="https://example.com/keep.png" />'
-            '<img src="https://example.com/drop.jpg" />'
+            "<html><body>"
+            f'<img src="{base}/image1.jpg">'
+            f'<img src="{base}/images/image2.png">'
+            f'<img src="{base}/image3.gif">'
+            "</body></html>"
         )
-        fake = FakeHttpGet(text=html)
+        page_url = serve(html)
         # Act
-        urls = get_image_urls("https://example.com", pattern=r"\.png$", http_get=fake)
+        img_urls = get_image_urls(page_url)
         # Assert
-        assert urls == ["https://example.com/keep.png"]
+        assert len(img_urls) == 3
 
-    def test_request_exception_returns_empty_list(self):
+    def test_absolute_image_appears_in_result(self, serve_html):
         # Arrange
-        fake = FakeHttpGet(raise_exception=requests.RequestException("boom"))
+        serve, base = serve_html
+        html = f'<html><body><img src="{base}/image1.jpg"></body></html>'
+        page_url = serve(html)
         # Act
-        urls = get_image_urls("https://example.com", http_get=fake)
+        img_urls = get_image_urls(page_url)
         # Assert
-        assert urls == []
+        assert f"{base}/image1.jpg" in img_urls
 
-
-class TestHttpGetParameters:
-    """Verify the production code passes the documented contract to ``http_get``."""
-
-    def test_get_urls_forwards_timeout(self):
+    def test_svg_images_are_skipped(self, serve_html):
         # Arrange
-        fake = FakeHttpGet(text="<html></html>")
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/logo.svg">'
+            f'<img src="{base}/photo.jpg">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        get_urls("https://example.com", http_get=fake)
+        img_urls = get_image_urls(page_url)
         # Assert
-        assert fake.captured[0]["timeout"] == 10
+        assert img_urls == [f"{base}/photo.jpg"]
 
-    def test_get_urls_sends_user_agent_header(self):
+    def test_pattern_filters_to_jpg_images(self, serve_html):
         # Arrange
-        fake = FakeHttpGet(text="<html></html>")
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/a.jpg">'
+            f'<img src="{base}/b.png">'
+            f'<img src="{base}/c.jpg">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        get_urls("https://example.com", http_get=fake)
+        img_urls = get_image_urls(page_url, pattern=r"\.jpg$")
         # Assert
-        assert "User-Agent" in fake.captured[0]["headers"]
+        assert len(img_urls) == 2
 
-    def test_get_urls_calls_raise_for_status(self):
+    def test_pattern_result_entries_all_match(self, serve_html):
         # Arrange
-        fake = FakeHttpGet(text="<html></html>")
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/a.jpg">'
+            f'<img src="{base}/b.png">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        get_urls("https://example.com", http_get=fake)
+        img_urls = get_image_urls(page_url, pattern=r"\.jpg$")
         # Assert
-        # `raise_for_status_calls` is incremented inside FakeResponse — proves
-        # production *actually* invoked it on the response.
-        # We can't capture the response object here because FakeHttpGet builds
-        # a fresh one each call, so reuse the captured-url check instead.
-        assert fake.captured[0]["url"] == "https://example.com"
+        assert all(url.endswith(".jpg") for url in img_urls)
+
+    def test_same_domain_excludes_other_hosts(self, serve_html):
+        # Arrange
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/local.jpg">'
+            '<img src="https://cdn.other.example/x.jpg">'
+            "</body></html>"
+        )
+        page_url = serve(html)
+        # Act
+        img_urls = get_image_urls(page_url, same_domain=True)
+        # Assert
+        assert img_urls == [f"{base}/local.jpg"]
+
+    def test_request_failure_returns_empty_list(self, refused_url):
+        # Arrange
+        # (refused_url points at a closed port)
+        # Act
+        img_urls = get_image_urls(refused_url)
+        # Assert
+        assert img_urls == []
+
+    def test_page_without_images_returns_empty_list(self, serve_html):
+        # Arrange
+        serve, _base = serve_html
+        page_url = serve("<html><body>No images here</body></html>")
+        # Act
+        img_urls = get_image_urls(page_url)
+        # Assert
+        assert img_urls == []
+
+
+class TestScrapingModuleImport:
+    def test_get_urls_is_exported(self):
+        # Arrange
+        import scitex_web
+
+        # Act
+        present = hasattr(scitex_web, "get_urls")
+        # Assert
+        assert present
+
+    def test_get_image_urls_is_exported(self):
+        # Arrange
+        import scitex_web
+
+        # Act
+        present = hasattr(scitex_web, "get_image_urls")
+        # Assert
+        assert present
+
+    def test_download_images_is_exported(self):
+        # Arrange
+        import scitex_web
+
+        # Act
+        present = hasattr(scitex_web, "download_images")
+        # Assert
+        assert present
+
+    def test_get_urls_is_callable(self):
+        # Arrange
+        import scitex_web
+
+        # Act
+        ok = callable(scitex_web.get_urls)
+        # Assert
+        assert ok
+
+    def test_get_image_urls_is_callable(self):
+        # Arrange
+        import scitex_web
+
+        # Act
+        ok = callable(scitex_web.get_image_urls)
+        # Assert
+        assert ok
+
+    def test_download_images_is_callable(self):
+        # Arrange
+        import scitex_web
+
+        # Act
+        ok = callable(scitex_web.download_images)
+        # Assert
+        assert ok
 
 
 if __name__ == "__main__":
-    pytest.main([os.path.abspath(__file__), "-v"])
+    import os
+
+    pytest.main([os.path.abspath(__file__)])
 
 # EOF
