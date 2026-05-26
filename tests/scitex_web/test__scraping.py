@@ -1,1358 +1,365 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# File: ./tests/scitex/web/test__scraping.py
+# File: ./tests/scitex_web/test__scraping.py
 
-"""
-Tests for web scraping utilities.
+"""Tests for web scraping utilities.
+
+`get_urls` and `get_image_urls` fetch a page via `requests.get` and parse it
+with BeautifulSoup. We exercise the real functions against a real loopback
+HTTP server (no mocks): the server serves the test HTML, and assertions are
+made relative to the actual served base URL.
+
+`download_images` is covered separately in `test_download_images.py`; its
+network/Pillow paths are not duplicated here.
 """
 
-import importlib
-import shutil
-import tempfile
-from pathlib import Path
-from unittest.mock import Mock, patch
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-# Resolve the `scitex_web.download_images` *module* explicitly. The package
-# `__init__` does `from .download_images import download_images`, which
-# shadows the submodule attribute with the function of the same name — so
-# `@patch("scitex_web.download_images.requests.get")` raises
-# "is not a package" under unittest.mock's importer. Use `patch.object` on
-# the module fetched via importlib instead.
-_download_images_module = importlib.import_module("scitex_web.download_images")
+from scitex_web import get_image_urls, get_urls
+
+
+def _make_handler(routes):
+    """BaseHTTPRequestHandler serving a {path: (status, body)} map."""
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 (http.server API)
+            status, body = routes.get(self.path, (404, ""))
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, *args):  # silence access log
+            pass
+
+    return _Handler
+
+
+@pytest.fixture
+def serve_html():
+    """Serve HTML on a loopback port; yields a function (html) -> page_url."""
+    routes = {}
+    server = HTTPServer(("127.0.0.1", 0), _make_handler(routes))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    base = f"http://{host}:{port}"
+
+    def _serve(html, path="/"):
+        routes[path] = (200, html)
+        return base + path
+
+    try:
+        yield _serve, base
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.fixture
+def refused_url():
+    """A URL bound but never listening → requests refuses instantly.
+
+    The socket is held (bound, no ``listen``) for the test's lifetime so
+    connects get an immediate RST instead of a slow connect-timeout, then
+    closed on teardown.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}/"
+    finally:
+        sock.close()
 
 
 class TestGetUrls:
-    """Test get_urls function."""
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_basic_len_urls_is_3(self, mock_get):
+    def test_extracts_all_three_links(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Link 1</a>
-                <a href="/page2">Link 2</a>
-                <a href="https://example.com/page3">Link 3</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/page1">L1</a>'
+            '<a href="/page2">L2</a>'
+            f'<a href="{base}/page3">L3</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        urls = get_urls("https://example.com")
-        # Act
-        # Assert
-        # Assert
+        urls = get_urls(page_url)
         # Assert
         assert len(urls) == 3
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_basic_https_example_com_page1_in_urls(self, mock_get):
+    def test_absolute_link_appears_in_result(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Link 1</a>
-                <a href="/page2">Link 2</a>
-                <a href="https://example.com/page3">Link 3</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = f'<html><body><a href="{base}/page1">L1</a></body></html>'
+        page_url = serve(html)
         # Act
-        # Act
-        urls = get_urls("https://example.com")
-        # Act
+        urls = get_urls(page_url)
         # Assert
-        # Assert
-        # Assert
-        assert "https://example.com/page1" in urls
+        assert f"{base}/page1" in urls
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_basic_https_example_com_page2_in_urls(self, mock_get):
+    def test_relative_link_resolved_against_base(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Link 1</a>
-                <a href="/page2">Link 2</a>
-                <a href="https://example.com/page3">Link 3</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = '<html><body><a href="/page2">L2</a></body></html>'
+        page_url = serve(html)
         # Act
-        # Act
-        urls = get_urls("https://example.com")
-        # Act
+        urls = get_urls(page_url)
         # Assert
-        # Assert
-        # Assert
-        assert "https://example.com/page2" in urls
+        assert f"{base}/page2" in urls
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_basic_https_example_com_page3_in_urls(self, mock_get):
+    def test_pattern_filters_to_pdf_links_only(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Link 1</a>
-                <a href="/page2">Link 2</a>
-                <a href="https://example.com/page3">Link 3</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/doc.pdf">pdf</a>'
+            f'<a href="{base}/page.html">html</a>'
+            f'<a href="{base}/report.pdf">pdf2</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        urls = get_urls("https://example.com")
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert "https://example.com/page3" in urls
-
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_with_pattern_len_urls_is_2(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/doc.pdf">PDF</a>
-                <a href="https://example.com/page.html">HTML</a>
-                <a href="https://example.com/data.pdf">Another PDF</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-        # Act
-        # Act
-        urls = get_urls("https://example.com", pattern=r"\.pdf$")
-        # Act
-        # Assert
-        # Assert
+        urls = get_urls(page_url, pattern=r"\.pdf$")
         # Assert
         assert len(urls) == 2
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_with_pattern_all_url_endswith_pdf_for_url_in_urls(self, mock_get):
+    def test_pattern_result_entries_all_match(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/doc.pdf">PDF</a>
-                <a href="https://example.com/page.html">HTML</a>
-                <a href="https://example.com/data.pdf">Another PDF</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/doc.pdf">pdf</a>'
+            f'<a href="{base}/page.html">html</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        urls = get_urls("https://example.com", pattern=r"\.pdf$")
-        # Act
-        # Assert
-        # Assert
+        urls = get_urls(page_url, pattern=r"\.pdf$")
         # Assert
         assert all(url.endswith(".pdf") for url in urls)
 
+    def test_same_domain_excludes_other_hosts(self, serve_html):
+        # Arrange
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/a">internal</a>'
+            '<a href="https://other.example/b">external</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
+        # Act
+        urls = get_urls(page_url, same_domain=True)
+        # Assert
+        assert urls == [f"{base}/a"]
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_same_domain_len_urls_is_2(self, mock_get):
+    def test_duplicate_links_are_deduplicated(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Internal</a>
-                <a href="https://other.com/page2">External</a>
-                <a href="/page3">Relative</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<a href="{base}/x">one</a>'
+            f'<a href="{base}/x">again</a>'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        urls = get_urls("https://example.com", same_domain=True)
-        # Act
+        urls = get_urls(page_url)
         # Assert
-        # Assert
-        # Assert
-        assert len(urls) == 2
+        assert urls == [f"{base}/x"]
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_same_domain_all_example_com_in_url_for_url_in_urls(self, mock_get):
+    def test_empty_page_returns_empty_list(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Internal</a>
-                <a href="https://other.com/page2">External</a>
-                <a href="/page3">Relative</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, _base = serve_html
+        page_url = serve("<html><body>no links</body></html>")
         # Act
-        # Act
-        urls = get_urls("https://example.com", same_domain=True)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert all("example.com" in url for url in urls)
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_same_domain_not_any_other_com_in_url_for_url_in_urls(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Internal</a>
-                <a href="https://other.com/page2">External</a>
-                <a href="/page3">Relative</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-        # Act
-        # Act
-        urls = get_urls("https://example.com", same_domain=True)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert not any("other.com" in url for url in urls)
-
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_relative_urls_len_urls_is_3(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="/page1">Page 1</a>
-                <a href="page2">Page 2</a>
-                <a href="../page3">Page 3</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-        # Act
-        # Act
-        urls = get_urls("https://example.com/dir/", absolute=True)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert len(urls) == 3
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_relative_urls_all_url_startswith_https_for_url_in_urls(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="/page1">Page 1</a>
-                <a href="page2">Page 2</a>
-                <a href="../page3">Page 3</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-        # Act
-        # Act
-        urls = get_urls("https://example.com/dir/", absolute=True)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert all(url.startswith("https://") for url in urls)
-
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_request_failure(self, mock_get):
-        """Test handling of request failures."""
-        # Arrange
-        import requests
-
-        from scitex_web import get_urls
-
-        mock_get.side_effect = requests.RequestException("Network error")
-
-        # Act
-        urls = get_urls("https://example.com")
-
+        urls = get_urls(page_url)
         # Assert
         assert urls == []
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_duplicate_removal(self, mock_get):
-        """Test that duplicate URLs are removed."""
+    def test_request_failure_returns_empty_list(self, refused_url):
         # Arrange
-        from scitex_web import get_urls
-
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <a href="https://example.com/page1">Link 1</a>
-                <a href="https://example.com/page1">Link 1 again</a>
-                <a href="/page1">Relative to same page</a>
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-
+        # (refused_url points at a closed port)
         # Act
-        urls = get_urls("https://example.com")
-
-        # Should only have one instance of page1
-        # Assert
-        assert len(urls) == 1
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_urls_empty_page(self, mock_get):
-        """Test handling of page with no links."""
-        # Arrange
-        from scitex_web import get_urls
-
-        mock_response = Mock()
-        mock_response.text = "<html><body>No links here</body></html>"
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-
-        # Act
-        urls = get_urls("https://example.com")
-
+        urls = get_urls(refused_url)
         # Assert
         assert urls == []
 
 
 class TestGetImageUrls:
-    """Test get_image_urls function."""
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_basic_len_img_urls_is_3(self, mock_get):
+    def test_extracts_all_image_sources(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_image_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="/images/image2.png">
-                <img src="https://example.com/image3.gif">
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/image1.jpg">'
+            f'<img src="{base}/images/image2.png">'
+            f'<img src="{base}/image3.gif">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        img_urls = get_image_urls("https://example.com")
-        # Act
-        # Assert
-        # Assert
+        img_urls = get_image_urls(page_url)
         # Assert
         assert len(img_urls) == 3
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_basic_https_example_com_image1_jpg_in_img_urls(self, mock_get):
+    def test_absolute_image_appears_in_result(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_image_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="/images/image2.png">
-                <img src="https://example.com/image3.gif">
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = f'<html><body><img src="{base}/image1.jpg"></body></html>'
+        page_url = serve(html)
         # Act
-        # Act
-        img_urls = get_image_urls("https://example.com")
-        # Act
+        img_urls = get_image_urls(page_url)
         # Assert
-        # Assert
-        # Assert
-        assert "https://example.com/image1.jpg" in img_urls
+        assert f"{base}/image1.jpg" in img_urls
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_basic_https_example_com_images_image2_png_in_img_urls(self, mock_get):
+    def test_svg_images_are_skipped(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_image_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="/images/image2.png">
-                <img src="https://example.com/image3.gif">
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/logo.svg">'
+            f'<img src="{base}/photo.jpg">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        img_urls = get_image_urls("https://example.com")
-        # Act
+        img_urls = get_image_urls(page_url)
         # Assert
-        # Assert
-        # Assert
-        assert "https://example.com/images/image2.png" in img_urls
+        assert img_urls == [f"{base}/photo.jpg"]
 
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_with_pattern_len_img_urls_is_2(self, mock_get):
+    def test_pattern_filters_to_jpg_images(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_image_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="https://example.com/image2.png">
-                <img src="https://example.com/image3.jpg">
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/a.jpg">'
+            f'<img src="{base}/b.png">'
+            f'<img src="{base}/c.jpg">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        img_urls = get_image_urls("https://example.com", pattern=r"\.jpg$")
-        # Act
-        # Assert
-        # Assert
+        img_urls = get_image_urls(page_url, pattern=r"\.jpg$")
         # Assert
         assert len(img_urls) == 2
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_with_pattern_all_url_endswith_jpg_for_url_in_img_urls(self, mock_get):
+    def test_pattern_result_entries_all_match(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_image_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="https://example.com/image2.png">
-                <img src="https://example.com/image3.jpg">
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/a.jpg">'
+            f'<img src="{base}/b.png">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        img_urls = get_image_urls("https://example.com", pattern=r"\.jpg$")
-        # Act
-        # Assert
-        # Assert
+        img_urls = get_image_urls(page_url, pattern=r"\.jpg$")
         # Assert
         assert all(url.endswith(".jpg") for url in img_urls)
 
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_same_domain_len_img_urls_is_2(self, mock_get):
+    def test_same_domain_excludes_other_hosts(self, serve_html):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_image_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="https://cdn.other.com/image2.jpg">
-                <img src="/image3.jpg">
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        serve, base = serve_html
+        html = (
+            "<html><body>"
+            f'<img src="{base}/local.jpg">'
+            '<img src="https://cdn.other.example/x.jpg">'
+            "</body></html>"
+        )
+        page_url = serve(html)
         # Act
-        # Act
-        img_urls = get_image_urls("https://example.com", same_domain=True)
-        # Act
+        img_urls = get_image_urls(page_url, same_domain=True)
         # Assert
-        # Assert
-        # Assert
-        assert len(img_urls) == 2
+        assert img_urls == [f"{base}/local.jpg"]
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_same_domain_all_example_com_in_url_for_url_in_img_urls(self, mock_get):
+    def test_request_failure_returns_empty_list(self, refused_url):
         # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import get_image_urls
-        mock_response = Mock()
-        mock_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="https://cdn.other.com/image2.jpg">
-                <img src="/image3.jpg">
-            </body>
-        </html>
-        """
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
+        # (refused_url points at a closed port)
         # Act
-        # Act
-        img_urls = get_image_urls("https://example.com", same_domain=True)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert all("example.com" in url for url in img_urls)
-
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_request_failure(self, mock_get):
-        """Test handling of request failures."""
-        # Arrange
-        import requests
-
-        from scitex_web import get_image_urls
-
-        mock_get.side_effect = requests.RequestException("Network error")
-
-        # Act
-        img_urls = get_image_urls("https://example.com")
-
+        img_urls = get_image_urls(refused_url)
         # Assert
         assert img_urls == []
 
-    @patch("scitex_web._scraping.requests.get")
-    def test_get_image_urls_no_images(self, mock_get):
-        """Test handling of page with no images."""
+    def test_page_without_images_returns_empty_list(self, serve_html):
         # Arrange
-        from scitex_web import get_image_urls
-
-        mock_response = Mock()
-        mock_response.text = "<html><body>No images here</body></html>"
-        mock_response.raise_for_status = Mock()
-        mock_get.return_value = mock_response
-
+        serve, _base = serve_html
+        page_url = serve("<html><body>No images here</body></html>")
         # Act
-        img_urls = get_image_urls("https://example.com")
-
+        img_urls = get_image_urls(page_url)
         # Assert
         assert img_urls == []
-
-
-class TestDownloadImages:
-    """Test download_images function."""
-
-    # The other tests in this class still rely on the pre-refactor
-    # `_scraping.requests.get` patch target and on a `pattern=` kwarg that
-    # `download_images()` no longer accepts. They need a separate cleanup
-    # pass; until that lands, exempt them so the suite stops blocking CI.
-    # The two tests that exercise the real public API
-    # (`test_download_images_basic`, `test_download_images_basic_jpg_only`)
-    # remain enabled below.
-    _ALLOWED = {"test_download_images_basic", "test_download_images_basic_jpg_only"}
-
-    def setup_method(self, method):
-        """Set up temporary directory for tests."""
-        if method.__name__ not in self._ALLOWED:
-            import pytest
-
-            pytest.skip(
-                "Outdated TestDownloadImages test against a refactored "
-                "download_images() signature; see scraping refactor."
-            )
-        self.temp_dir = tempfile.mkdtemp()
-
-    def teardown_method(self):
-        """Clean up temporary directory after tests."""
-        temp_dir = getattr(self, "temp_dir", None)
-        if temp_dir and Path(temp_dir).exists():
-            shutil.rmtree(temp_dir)
-
-    @patch.object(_download_images_module.requests, "get")
-    def test_download_images_basic_len_paths_is_2(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import download_images
-        # Mock page response. `_extract_image_urls` parses `response.content`
-        # (not `.text`), so set both for safety.
-        page_html = (
-            b"<html><body>"
-            b'<img src="https://example.com/image1.jpg">'
-            b'<img src="https://example.com/image2.png">'
-            b"</body></html>"
-        )
-        page_response = Mock()
-        page_response.content = page_html
-        page_response.text = page_html.decode()
-        page_response.raise_for_status = Mock()
-        img_response1 = Mock()
-        img_response1.content = b"fake image data 1"
-        img_response1.headers = {"content-type": "image/jpeg"}
-        img_response1.raise_for_status = Mock()
-        img_response2 = Mock()
-        img_response2.content = b"fake image data 2"
-        img_response2.headers = {"content-type": "image/png"}
-        img_response2.raise_for_status = Mock()
-        # First call fetches the page; subsequent calls fetch images. Order
-        # of image downloads is non-deterministic (concurrent), so map by URL.
-        def _side_effect(url, *args, **kwargs):
-            if url == "https://example.com":
-                return page_response
-            if url.endswith(".jpg"):
-                return img_response1
-            return img_response2
-        mock_get.side_effect = _side_effect
-        # Act
-        # Act
-        paths = download_images(
-            "https://example.com",
-            output_dir=self.temp_dir,
-            min_size=None,  # disable Pillow size filtering
-        )
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert len(paths) == 2
-
-    @patch.object(_download_images_module.requests, "get")
-    def test_download_images_basic_all_path_p_exists_for_p_in_paths(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import download_images
-        # Mock page response. `_extract_image_urls` parses `response.content`
-        # (not `.text`), so set both for safety.
-        page_html = (
-            b"<html><body>"
-            b'<img src="https://example.com/image1.jpg">'
-            b'<img src="https://example.com/image2.png">'
-            b"</body></html>"
-        )
-        page_response = Mock()
-        page_response.content = page_html
-        page_response.text = page_html.decode()
-        page_response.raise_for_status = Mock()
-        img_response1 = Mock()
-        img_response1.content = b"fake image data 1"
-        img_response1.headers = {"content-type": "image/jpeg"}
-        img_response1.raise_for_status = Mock()
-        img_response2 = Mock()
-        img_response2.content = b"fake image data 2"
-        img_response2.headers = {"content-type": "image/png"}
-        img_response2.raise_for_status = Mock()
-        # First call fetches the page; subsequent calls fetch images. Order
-        # of image downloads is non-deterministic (concurrent), so map by URL.
-        def _side_effect(url, *args, **kwargs):
-            if url == "https://example.com":
-                return page_response
-            if url.endswith(".jpg"):
-                return img_response1
-            return img_response2
-        mock_get.side_effect = _side_effect
-        # Act
-        # Act
-        paths = download_images(
-            "https://example.com",
-            output_dir=self.temp_dir,
-            min_size=None,  # disable Pillow size filtering
-        )
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert all(Path(p).exists() for p in paths)
-
-
-    @patch.object(_download_images_module.requests, "get")
-    def test_download_images_basic_jpg_only(self, mock_get):
-        """Smoke test that download_images returns paths for one image.
-
-        Replaces the old `pattern=` kwarg test — `download_images` no longer
-        accepts a pattern argument. We just assert the happy path with a
-        single image.
-        """
-        # Arrange
-        from scitex_web import download_images
-
-        page_html = (
-            b'<html><body><img src="https://example.com/image1.jpg"></body></html>'
-        )
-        page_response = Mock()
-        page_response.content = page_html
-        page_response.text = page_html.decode()
-        page_response.raise_for_status = Mock()
-
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-
-        mock_get.side_effect = [page_response, img_response]
-
-        # Act
-        paths = download_images(
-            "https://example.com",
-            output_dir=self.temp_dir,
-            min_size=None,
-        )
-
-        # Assert
-        assert len(paths) == 1
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_download_images_duplicate_filenames_len_paths_is_2(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import download_images
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/dir1/image.jpg">
-                <img src="https://example.com/dir2/image.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-        mock_get.side_effect = [page_response, img_response, img_response]
-        # Act
-        # Act
-        paths = download_images("https://example.com", output_dir=self.temp_dir)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert len(paths) == 2
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_download_images_duplicate_filenames_len_set_paths_is_2(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        from scitex_web import download_images
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/dir1/image.jpg">
-                <img src="https://example.com/dir2/image.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-        mock_get.side_effect = [page_response, img_response, img_response]
-        # Act
-        # Act
-        paths = download_images("https://example.com", output_dir=self.temp_dir)
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert len(set(paths)) == 2  # All paths are unique
-
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_download_images_request_failure(self, mock_get):
-        """Test handling of request failures."""
-        # Arrange
-        import requests
-
-        from scitex_web import download_images
-
-        mock_get.side_effect = requests.RequestException("Network error")
-
-        # Act
-        paths = download_images("https://example.com", output_dir=self.temp_dir)
-
-        # Assert
-        assert paths == []
-
-    @patch("scitex_web._scraping.requests.get")
-    def test_download_images_same_domain(self, mock_get):
-        """Test downloading only images from same domain."""
-        # Arrange
-        from scitex_web import download_images
-
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image1.jpg">
-                <img src="https://cdn.other.com/image2.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-
-        mock_get.side_effect = [page_response, img_response]
-
-        # Act
-        paths = download_images(
-            "https://example.com", output_dir=self.temp_dir, same_domain=True
-        )
-
-        # Should only download the first image
-        # Assert
-        assert len(paths) == 1
-
-    @patch("scitex_web._scraping.requests.get")
-    @patch.dict("os.environ", {}, clear=True)
-    def test_download_images_no_output_dir_len_paths_is_1(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        import os
-        from scitex_web import download_images
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-        mock_get.side_effect = [page_response, img_response]
-        # Set SCITEX_DIR to a temp location for testing
-        test_scitex_dir = Path(self.temp_dir) / "scitex"
-        os.environ["SCITEX_DIR"] = str(test_scitex_dir)
-        # Act
-        # Act
-        paths = download_images("https://example.com")
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert len(paths) == 1
-
-    @patch("scitex_web._scraping.requests.get")
-    @patch.dict("os.environ", {}, clear=True)
-    def test_download_images_no_output_dir_expected_dir_exists_len_paths_is_1(self, mock_get):
-        # Arrange
-        # Arrange
-        import os
-        from scitex_web import download_images
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-        mock_get.side_effect = [page_response, img_response]
-        # Set SCITEX_DIR to a temp location for testing
-        test_scitex_dir = Path(self.temp_dir) / "scitex"
-        os.environ["SCITEX_DIR"] = str(test_scitex_dir)
-        # Act
-        paths = download_images("https://example.com")
-        # Act
-        # Assert
-        # Assert
-        assert len(paths) == 1
-
-    @patch("scitex_web._scraping.requests.get")
-    @patch.dict("os.environ", {}, clear=True)
-    def test_download_images_no_output_dir_expected_dir_exists_expected_dir_exists(self, mock_get):
-        # Arrange
-        # Arrange
-        import os
-        from scitex_web import download_images
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-        mock_get.side_effect = [page_response, img_response]
-        # Set SCITEX_DIR to a temp location for testing
-        test_scitex_dir = Path(self.temp_dir) / "scitex"
-        os.environ["SCITEX_DIR"] = str(test_scitex_dir)
-        # Act
-        paths = download_images("https://example.com")
-        # Assert
-        assert len(paths) == 1
-        expected_dir = test_scitex_dir / "web" / "downloads"
-        # Act
-        # Assert
-        assert expected_dir.exists()
-
-
-
-    @patch("scitex_web._scraping.requests.get")
-    @patch.dict(
-        "os.environ", {"SCITEX_WEB_DOWNLOADS_DIR": "/tmp/test_downloads"}, clear=True
-    )
-    def test_download_images_env_var_priority_len_paths_is_1(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        import os
-        from scitex_web import download_images
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-        mock_get.side_effect = [page_response, img_response]
-        # Set both env vars
-        os.environ["SCITEX_DIR"] = "/tmp/scitex"
-        os.environ["SCITEX_WEB_DOWNLOADS_DIR"] = self.temp_dir
-        # Act
-        # Act
-        paths = download_images("https://example.com")
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert len(paths) == 1
-
-    @patch("scitex_web._scraping.requests.get")
-    @patch.dict(
-        "os.environ", {"SCITEX_WEB_DOWNLOADS_DIR": "/tmp/test_downloads"}, clear=True
-    )
-    def test_download_images_env_var_priority_paths_0_startswith_self_temp_dir(self, mock_get):
-        # Arrange
-        # Arrange
-        # Arrange
-        import os
-        from scitex_web import download_images
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/image.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-        img_response = Mock()
-        img_response.content = b"fake image data"
-        img_response.headers = {"content-type": "image/jpeg"}
-        img_response.raise_for_status = Mock()
-        mock_get.side_effect = [page_response, img_response]
-        # Set both env vars
-        os.environ["SCITEX_DIR"] = "/tmp/scitex"
-        os.environ["SCITEX_WEB_DOWNLOADS_DIR"] = self.temp_dir
-        # Act
-        # Act
-        paths = download_images("https://example.com")
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert paths[0].startswith(self.temp_dir)
-
-
-    @patch("scitex_web._scraping.requests.get")
-    @patch("scitex_web._scraping.PILLOW_AVAILABLE", True)
-    @patch("scitex_web._scraping.Image.open")
-    def test_download_images_min_size_filter(self, mock_image_open, mock_get):
-        """Test minimum size filtering."""
-        # Arrange
-        from scitex_web import download_images
-
-        page_response = Mock()
-        page_response.text = """
-        <html>
-            <body>
-                <img src="https://example.com/small.jpg">
-                <img src="https://example.com/large.jpg">
-            </body>
-        </html>
-        """
-        page_response.raise_for_status = Mock()
-
-        img_response_small = Mock()
-        img_response_small.content = b"small image"
-        img_response_small.headers = {"content-type": "image/jpeg"}
-        img_response_small.raise_for_status = Mock()
-
-        img_response_large = Mock()
-        img_response_large.content = b"large image"
-        img_response_large.headers = {"content-type": "image/jpeg"}
-        img_response_large.raise_for_status = Mock()
-
-        # Mock image sizes
-        small_img = Mock()
-        small_img.size = (50, 50)
-        large_img = Mock()
-        large_img.size = (500, 500)
-
-        mock_image_open.side_effect = [small_img, large_img]
-        mock_get.side_effect = [page_response, img_response_small, img_response_large]
-
-        # Act
-        paths = download_images(
-            "https://example.com", output_dir=self.temp_dir, min_size=(100, 100)
-        )
-
-        # Only the large image should be downloaded
-        # Assert
-        assert len(paths) == 1
 
 
 class TestScrapingModuleImport:
-    """Test that scraping functions are properly exported."""
-
-    def test_scraping_functions_available_hasattr_scitex_web_get_urls(self):
+    def test_get_urls_is_exported(self):
         # Arrange
-        # Arrange
-        # Act
-        # Arrange
-        # Act
         import scitex_web
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert hasattr(scitex_web, "get_urls")
 
-    def test_scraping_functions_available_hasattr_scitex_web_download_images(self):
-        # Arrange
-        # Arrange
         # Act
+        present = hasattr(scitex_web, "get_urls")
+        # Assert
+        assert present
+
+    def test_get_image_urls_is_exported(self):
         # Arrange
-        # Act
         import scitex_web
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert hasattr(scitex_web, "download_images")
 
-    def test_scraping_functions_available_hasattr_scitex_web_get_image_urls(self):
-        # Arrange
-        # Arrange
         # Act
+        present = hasattr(scitex_web, "get_image_urls")
+        # Assert
+        assert present
+
+    def test_download_images_is_exported(self):
         # Arrange
-        # Act
         import scitex_web
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert hasattr(scitex_web, "get_image_urls")
 
-    def test_scraping_functions_available_callable_scitex_web_get_urls(self):
-        # Arrange
-        # Arrange
         # Act
+        present = hasattr(scitex_web, "download_images")
+        # Assert
+        assert present
+
+    def test_get_urls_is_callable(self):
         # Arrange
-        # Act
         import scitex_web
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert callable(scitex_web.get_urls)
 
-    def test_scraping_functions_available_callable_scitex_web_download_images(self):
-        # Arrange
-        # Arrange
         # Act
+        ok = callable(scitex_web.get_urls)
+        # Assert
+        assert ok
+
+    def test_get_image_urls_is_callable(self):
         # Arrange
-        # Act
         import scitex_web
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert callable(scitex_web.download_images)
 
-    def test_scraping_functions_available_callable_scitex_web_get_image_urls(self):
-        # Arrange
-        # Arrange
         # Act
+        ok = callable(scitex_web.get_image_urls)
+        # Assert
+        assert ok
+
+    def test_download_images_is_callable(self):
         # Arrange
-        # Act
         import scitex_web
-        # Act
-        # Assert
-        # Assert
-        # Assert
-        assert callable(scitex_web.get_image_urls)
 
+        # Act
+        ok = callable(scitex_web.download_images)
+        # Assert
+        assert ok
 
 
 if __name__ == "__main__":
     import os
 
-    import pytest
-
     pytest.main([os.path.abspath(__file__)])
 
-# --------------------------------------------------------------------------------
-# Start of Source Code from: /home/ywatanabe/proj/scitex-code/src/scitex/web/_scraping.py
-# --------------------------------------------------------------------------------
-# #!/usr/bin/env python3
-# # File: ./src/scitex/web/_scraping.py
-#
-# """Web scraping utilities for extracting URLs."""
-#
-# import re
-# import urllib.parse
-# from typing import List, Optional, Set
-#
-# import requests
-# from bs4 import BeautifulSoup
-#
-# from scitex.logging import getLogger
-#
-# logger = getLogger(__name__)
-#
-# DEFAULT_TIMEOUT = 10
-# DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-#
-#
-# def get_urls(
-#     url: str,
-#     pattern: Optional[str] = None,
-#     absolute: bool = True,
-#     same_domain: bool = False,
-#     include_external: bool = True,
-# ) -> List[str]:
-#     """
-#     Extract all URLs from a webpage.
-#
-#     Args:
-#         url: The URL of the webpage to scrape
-#         pattern: Optional regex pattern to filter URLs (e.g., r'\\.pdf$' for PDF files)
-#         absolute: If True, convert relative URLs to absolute URLs
-#         same_domain: If True, only return URLs from the same domain
-#         include_external: If True, include external links (only applies if same_domain=False)
-#
-#     Returns:
-#         List of URLs found on the page
-#
-#     Example:
-#         >>> urls = get_urls('https://example.com', pattern=r'\\.pdf$')
-#         >>> urls = get_urls('https://example.com', same_domain=True)
-#     """
-#     try:
-#         logger.info(f"Fetching URLs from: {url}")
-#         response = requests.get(
-#             url,
-#             timeout=DEFAULT_TIMEOUT,
-#             headers={"User-Agent": DEFAULT_USER_AGENT},
-#         )
-#         response.raise_for_status()
-#     except requests.RequestException as e:
-#         logger.error(f"Failed to fetch URL {url}: {e}")
-#         return []
-#
-#     soup = BeautifulSoup(response.text, "html.parser")
-#     urls_found: Set[str] = set()
-#
-#     parsed_base = urllib.parse.urlparse(url)
-#
-#     for link in soup.find_all("a", href=True):
-#         href = link["href"]
-#
-#         if absolute:
-#             href = urllib.parse.urljoin(url, href)
-#
-#         if same_domain:
-#             parsed_href = urllib.parse.urlparse(href)
-#             if parsed_href.netloc != parsed_base.netloc:
-#                 continue
-#         elif not include_external:
-#             parsed_href = urllib.parse.urlparse(href)
-#             if parsed_href.netloc and parsed_href.netloc != parsed_base.netloc:
-#                 continue
-#
-#         if pattern and not re.search(pattern, href):
-#             continue
-#
-#         urls_found.add(href)
-#
-#     result = sorted(list(urls_found))
-#     logger.info(f"Found {len(result)} URLs")
-#     return result
-#
-#
-# def get_image_urls(
-#     url: str,
-#     pattern: Optional[str] = None,
-#     same_domain: bool = False,
-# ) -> List[str]:
-#     """
-#     Extract all image URLs from a webpage without downloading them.
-#
-#     Args:
-#         url: The URL of the webpage to scrape
-#         pattern: Optional regex pattern to filter image URLs
-#         same_domain: If True, only return images from the same domain
-#
-#     Returns:
-#         List of image URLs found on the page
-#
-#     Note:
-#         - SVG files are automatically skipped (vector graphics)
-#         - Checks both 'src' and 'data-src' attributes for lazy-loaded images
-#
-#     Example:
-#         >>> img_urls = get_image_urls('https://example.com')
-#         >>> img_urls = get_image_urls('https://example.com', pattern=r'\\.png$')
-#     """
-#     try:
-#         logger.info(f"Fetching image URLs from: {url}")
-#         response = requests.get(
-#             url,
-#             timeout=DEFAULT_TIMEOUT,
-#             headers={"User-Agent": DEFAULT_USER_AGENT},
-#         )
-#         response.raise_for_status()
-#     except requests.RequestException as e:
-#         logger.error(f"Failed to fetch URL {url}: {e}")
-#         return []
-#
-#     soup = BeautifulSoup(response.text, "html.parser")
-#     image_urls: Set[str] = set()
-#
-#     parsed_base = urllib.parse.urlparse(url)
-#
-#     for img in soup.find_all("img"):
-#         img_url = img.get("src") or img.get("data-src")
-#         if not img_url:
-#             continue
-#
-#         img_url = urllib.parse.urljoin(url, img_url)
-#
-#         if img_url.lower().endswith((".svg", ".svgz")):
-#             continue
-#
-#         if same_domain:
-#             parsed_img = urllib.parse.urlparse(img_url)
-#             if parsed_img.netloc != parsed_base.netloc:
-#                 continue
-#
-#         if pattern and not re.search(pattern, img_url):
-#             continue
-#
-#         image_urls.add(img_url)
-#
-#     result = sorted(list(image_urls))
-#     logger.info(f"Found {len(result)} image URLs")
-#     return result
-
-# --------------------------------------------------------------------------------
-# End of Source Code from: /home/ywatanabe/proj/scitex-code/src/scitex/web/_scraping.py
-# --------------------------------------------------------------------------------
+# EOF

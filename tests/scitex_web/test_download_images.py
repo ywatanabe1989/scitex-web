@@ -18,97 +18,85 @@ from scitex_web.download_images import (
 )
 
 
+@pytest.fixture
+def scitex_dir_env(tmp_path):
+    """Set SCITEX_DIR to a tmp path for the test, restore afterward."""
+    saved = os.environ.get("SCITEX_DIR")
+    os.environ["SCITEX_DIR"] = str(tmp_path)
+    try:
+        yield str(tmp_path)
+    finally:
+        if saved is None:
+            os.environ.pop("SCITEX_DIR", None)
+        else:
+            os.environ["SCITEX_DIR"] = saved
+
+
+@pytest.fixture
+def no_scitex_dir_env():
+    """Ensure SCITEX_DIR is unset for the test, restore afterward."""
+    saved = os.environ.pop("SCITEX_DIR", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            os.environ["SCITEX_DIR"] = saved
+
+
 class TestNormalizeUrlForDirectory:
-    def test_strips_www_and_uses_domain(self):
+    def test_strips_www_and_uses_domain_only(self):
         # Arrange
+        url = "https://www.example.com/"
         # Act
-        # Arrange
-        # Act
-        # Arrange
-        # Act
-        out = _normalize_url_for_directory("https://www.example.com/")
-        # Assert
-        # Assert
+        out = _normalize_url_for_directory(url)
         # Assert
         assert out == "example.com"
 
-    def test_path_components_become_dashes_example_com_in_out(self):
+    def test_path_components_retain_domain_segment(self):
         # Arrange
-        # Arrange
+        url = "https://example.com/foo/bar"
         # Act
-        # Arrange
-        # Act
-        out = _normalize_url_for_directory("https://example.com/foo/bar")
-        # Act
-        # Assert
-        # Assert
+        out = _normalize_url_for_directory(url)
         # Assert
         assert "example.com" in out
 
-    def test_path_components_become_dashes_foo_bar_in_out(self):
+    def test_path_components_join_with_dashes(self):
         # Arrange
-        # Arrange
+        url = "https://example.com/foo/bar"
         # Act
-        # Arrange
-        # Act
-        out = _normalize_url_for_directory("https://example.com/foo/bar")
-        # Act
-        # Assert
-        # Assert
+        out = _normalize_url_for_directory(url)
         # Assert
         assert "foo-bar" in out
 
-
-    def test_unsafe_chars_collapsed_not_in_out(self):
+    def test_unsafe_query_mark_is_stripped(self):
         # Arrange
-        # Arrange
+        url = "https://example.com/a?b=1&c=2"
         # Act
-        # Arrange
-        # Act
-        out = _normalize_url_for_directory("https://example.com/a?b=1&c=2")
-        # Act
-        # Assert
-        # Assert
+        out = _normalize_url_for_directory(url)
         # Assert
         assert "?" not in out
 
-    def test_unsafe_chars_collapsed_not_in_out(self):
+    def test_unsafe_ampersand_is_stripped(self):
         # Arrange
-        # Arrange
+        url = "https://example.com/a?b=1&c=2"
         # Act
-        # Arrange
-        # Act
-        out = _normalize_url_for_directory("https://example.com/a?b=1&c=2")
-        # Act
-        # Assert
-        # Assert
+        out = _normalize_url_for_directory(url)
         # Assert
         assert "&" not in out
 
-    def test_unsafe_chars_collapsed_not_in_out(self):
+    def test_repeated_dashes_are_collapsed(self):
         # Arrange
-        # Arrange
+        url = "https://example.com/a?b=1&c=2"
         # Act
-        # Arrange
-        # Act
-        out = _normalize_url_for_directory("https://example.com/a?b=1&c=2")
-        # Act
-        # Assert
-        # Assert
+        out = _normalize_url_for_directory(url)
         # Assert
         assert "--" not in out
 
-
     def test_long_paths_truncated_to_100_chars(self):
         # Arrange
+        url = "https://example.com/" + "x" * 500
         # Act
-        # Arrange
-        # Act
-        # Arrange
-        # Act
-        out = _normalize_url_for_directory("https://example.com/" + "x" * 500)
-        # Assert
-        # Assert
+        out = _normalize_url_for_directory(url)
         # Assert
         assert len(out) <= 100
 
@@ -127,60 +115,37 @@ class TestIsDirectImageUrl:
             ("https://example.com/folder", False),
         ],
     )
-    def test_url_classification_is_direct_image_url_url_is_expected(self, url, expected):
+    def test_url_classification_matches_expected(self, url, expected):
         # Arrange
+        # (url + expected are parametrized inputs)
         # Act
+        result = _is_direct_image_url(url)
         # Assert
-        # Arrange
-        # Act
-        # Assert
-        # Arrange
-        # Act
-        # Assert
-        assert _is_direct_image_url(url) is expected
+        assert result is expected
 
 
 class TestGetDefaultDownloadDir:
-    def test_uses_scitex_dir_env_out_startswith_str_tmp_path(self, monkeypatch, tmp_path):
+    def test_default_dir_starts_with_scitex_dir_env(self, scitex_dir_env):
         # Arrange
-        # Arrange
-        # Arrange
-        monkeypatch.setenv("SCITEX_DIR", str(tmp_path))
-        # Act
+        # (scitex_dir_env fixture sets SCITEX_DIR)
         # Act
         out = _get_default_download_dir()
-        # Act
         # Assert
-        # Assert
-        # Assert
-        assert out.startswith(str(tmp_path))
+        assert out.startswith(scitex_dir_env)
 
-    def test_uses_scitex_dir_env_out_endswith_os_path_join_web_downloads(self, monkeypatch, tmp_path):
+    def test_default_dir_ends_with_web_downloads(self, scitex_dir_env):
         # Arrange
-        # Arrange
-        # Arrange
-        monkeypatch.setenv("SCITEX_DIR", str(tmp_path))
-        # Act
+        # (scitex_dir_env fixture sets SCITEX_DIR)
         # Act
         out = _get_default_download_dir()
-        # Act
-        # Assert
-        # Assert
         # Assert
         assert out.endswith(os.path.join("web", "downloads"))
 
-
-    def test_falls_back_to_home_when_env_unset(self, monkeypatch):
+    def test_default_dir_falls_back_to_home_when_env_unset(self, no_scitex_dir_env):
         # Arrange
-        # Arrange
-        # Arrange
-        monkeypatch.delenv("SCITEX_DIR", raising=False)
-        # Act
-        # Act
+        # (no_scitex_dir_env fixture clears SCITEX_DIR)
         # Act
         out = _get_default_download_dir()
-        # Assert
-        # Assert
         # Assert
         assert out.endswith(os.path.join(".scitex", "web", "downloads"))
 

@@ -32,6 +32,8 @@ def get_urls(
     absolute: bool = True,
     same_domain: bool = False,
     include_external: bool = True,
+    *,
+    http_get=None,
 ) -> List[str]:
     """
     Extract all URLs from a webpage.
@@ -42,6 +44,9 @@ def get_urls(
         absolute: If True, convert relative URLs to absolute URLs
         same_domain: If True, only return URLs from the same domain
         include_external: If True, include external links (only applies if same_domain=False)
+        http_get: Injected HTTP GET callable matching ``requests.get(url, *,
+            timeout, headers)``. Defaults to :func:`requests.get`. Tests pass
+            a hand-rolled fake; production code never sets this.
 
     Returns:
         List of URLs found on the page
@@ -52,9 +57,12 @@ def get_urls(
     """
     from bs4 import BeautifulSoup  # lazy: see module docstring, todo#279
 
+    if http_get is None:
+        http_get = requests.get
+
     try:
         logger.info(f"Fetching URLs from: {url}")
-        response = requests.get(
+        response = http_get(
             url,
             timeout=DEFAULT_TIMEOUT,
             headers={"User-Agent": DEFAULT_USER_AGENT},
@@ -98,6 +106,8 @@ def get_image_urls(
     url: str,
     pattern: Optional[str] = None,
     same_domain: bool = False,
+    *,
+    http_get=None,
 ) -> List[str]:
     """
     Extract all image URLs from a webpage without downloading them.
@@ -106,6 +116,9 @@ def get_image_urls(
         url: The URL of the webpage to scrape
         pattern: Optional regex pattern to filter image URLs
         same_domain: If True, only return images from the same domain
+        http_get: Injected HTTP GET callable matching ``requests.get(url, *,
+            timeout, headers)``. Defaults to :func:`requests.get`. Tests pass
+            a hand-rolled fake; production code never sets this.
 
     Returns:
         List of image URLs found on the page
@@ -120,9 +133,12 @@ def get_image_urls(
     """
     from bs4 import BeautifulSoup  # lazy: see module docstring, todo#279
 
+    if http_get is None:
+        http_get = requests.get
+
     try:
         logger.info(f"Fetching image URLs from: {url}")
-        response = requests.get(
+        response = http_get(
             url,
             timeout=DEFAULT_TIMEOUT,
             headers={"User-Agent": DEFAULT_USER_AGENT},
