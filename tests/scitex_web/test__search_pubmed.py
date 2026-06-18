@@ -10,7 +10,6 @@ a real aiohttp test server. Pure functions (`_parse_abstract_xml`,
 hand-rolled fake collaborators. No mocks.
 """
 
-import asyncio
 import json
 import sys
 import threading
@@ -560,8 +559,15 @@ class TestFormatBibtex:
 # async helpers — real aiohttp test server
 # --------------------------------------------------------------------------
 @pytest.fixture
-def aiohttp_server_factory():
-    """Build an aiohttp app serving fixed JSON or XML; yields a runner factory."""
+async def aiohttp_server_factory():
+    """Build an aiohttp app serving fixed JSON or XML; yields a runner factory.
+
+    An async fixture so its teardown runs inside pytest-asyncio's managed
+    event loop. A plain sync fixture cannot reach that loop once the test
+    has finished (Python 3.10+ ``asyncio.get_event_loop()`` raises
+    ``RuntimeError: There is no current event loop`` after the per-test loop
+    is closed), so cleanup is awaited directly here instead.
+    """
     from aiohttp import web
 
     runners = []
@@ -579,11 +585,8 @@ def aiohttp_server_factory():
 
     yield _start
 
-    async def _cleanup():
-        for r in runners:
-            await r.cleanup()
-
-    asyncio.get_event_loop().run_until_complete(_cleanup())
+    for runner in runners:
+        await runner.cleanup()
 
 
 class TestAsyncFunctions:
